@@ -2,18 +2,20 @@ function registerMeeting(input) {
   return withClientError_(function () {
     requireConfigured_();
     input = input || {};
-    assertApp_(nonEmptyString_(input.title), 'VALIDATION_ERROR', '会議名を入力してください。');
-    assertApp_(APP_CONFIG.categories.indexOf(input.category) >= 0, 'VALIDATION_ERROR', 'カテゴリーを一覧から選択してください。');
-    assertApp_(isIsoDate_(input.meetingEndedAt), 'VALIDATION_ERROR', '会議終了日時を入力してください。');
+    assertApp_(!nonEmptyString_(input.meetingEndedAt) || isIsoDate_(input.meetingEndedAt), 'VALIDATION_ERROR', '会議終了日時の形式が不正です。');
     const file = getFileSafely_(input.transcriptFileId);
     assertApp_(file, 'FILE_NOT_FOUND', '文字起こしファイルが見つかりません。');
     readTextFile_(file.getId(), APP_CONFIG.maxTranscriptCharacters);
     const duplicate = findRow_('Meetings', function (row) { return String(row.transcriptFileId) === String(file.getId()); });
     assertApp_(!duplicate, 'DUPLICATE_MEETING', 'この文字起こしは登録済みです: ' + (duplicate ? duplicate.meetingId : ''));
-    moveFileToTranscriptCategory_(file, input.category);
+    const title = nonEmptyString_(input.title) ? input.title.trim() : file.getName();
+    let category = input.category;
+    if (APP_CONFIG.categories.indexOf(category) < 0) category = detectTranscriptCategory_(file) || APP_CONFIG.categories[0];
+    moveFileToTranscriptCategory_(file, category);
     const meeting = {
-      meetingId: createId_('MTG'), title: input.title.trim(), category: input.category,
-      transcriptFileId: file.getId(), meetingEndedAt: new Date(input.meetingEndedAt).toISOString(),
+      meetingId: createId_('MTG'), title: title, category: category,
+      transcriptFileId: file.getId(),
+      meetingEndedAt: nonEmptyString_(input.meetingEndedAt) ? new Date(input.meetingEndedAt).toISOString() : nowIso_(),
       registeredAt: nowIso_(), analysisStatus: 'pending', workflowStatus: 'active', completedAt: ''
     };
     appendObject_('Meetings', meeting);
@@ -30,16 +32,33 @@ function listMeetings() {
 function listTranscriptFiles() {
   return withClientError_(function () {
     const transcriptRoot = getFolderByPath_(APP_CONFIG.folderPaths.transcripts);
-    let files = listFilesInFolder_(transcriptRoot, 100);
-    const unclassified = transcriptRoot.getFoldersByName('未分類');
-    if (unclassified.hasNext()) files = files.concat(listFilesInFolder_(unclassified.next(), 100));
+    const doneFolderName = APP_CONFIG.folderPaths.transcriptsDone[APP_CONFIG.folderPaths.transcriptsDone.length - 1];
+    let files = listFilesInFolder_(transcriptRoot, 100).map(function (file) { file.location = ''; return file; });
+    const subfolders = transcriptRoot.getFolders();
+    while (subfolders.hasNext()) {
+      const folder = subfolders.next();
+      const folderName = folder.getName();
+      if (folderName === doneFolderName) continue;
+      files = files.concat(listFilesInFolder_(folder, 100).map(function (file) { file.location = folderName; return file; }));
+    }
+    const registered = {};
+    getRows_('Meetings').forEach(function (row) { registered[String(row.transcriptFileId)] = true; });
     const unique = {};
     files = files.filter(function (file) {
-      if (unique[file.fileId]) return false;
+      if (unique[file.fileId] || registered[file.fileId]) return false;
       unique[file.fileId] = true;
       return true;
     });
     return { success: true, files: files };
+  });
+}
+
+function getTranscriptFileDefaults(fileId) {
+  return withClientError_(function () {
+    requireConfigured_();
+    const file = getFileSafely_(fileId);
+    assertApp_(file, 'FILE_NOT_FOUND', '文字起こしファイルが見つかりません。');
+    return { success: true, defaults: { title: file.getName(), category: detectTranscriptCategory_(file) } };
   });
 }
 

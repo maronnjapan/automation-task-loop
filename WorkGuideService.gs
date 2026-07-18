@@ -93,7 +93,7 @@ function saveWorkGuide(payload) {
       updateRow_('Actions', action._rowNumber, { status: 'guide_ready' });
       if (payload.buildSessionId) {
         const build = requireBuildSession_(payload.buildSessionId);
-        updateRow_('WorkGuideBuildSessions', build._rowNumber, { currentStep: 10, status: 'completed', updatedAt: now });
+        updateRow_('WorkGuideBuildSessions', build._rowNumber, { currentStep: 11, status: 'completed', updatedAt: now });
       }
       completed.spreadsheetUpdated = true;
       persistSaveState_(requestRow, state, completed);

@@ -2,7 +2,7 @@ function buildMeetingAnalysisPrompt_(meeting, transcript) {
   return [
     'あなたは会議ログを、本人が直後に理解し、必要な作業だけをガイド化できる形へ構造化します。',
     '次の制約を厳守してください。',
-    '- 出力は JSON オブジェクトのみ。Markdown のコードフェンスや前後の説明は禁止。',
+    '- 出力は JSON オブジェクトのみを ```json コードブロックで囲んで返す。コードブロックの前後に説明文を書かない。',
     '- 文字起こしにない事実を推測しない。不明点は pendingItems に入れる。',
     '- クイズは重要事項の件数に応じた必要十分な数にし、重複・些末な問題を避ける。',
     '- single_choice は3択か4択、true_false は2択、multi_choice は正解を複数指定する。自由記述は禁止。',
@@ -29,7 +29,8 @@ function buildMeetingAnalysisPrompt_(meeting, transcript) {
 function buildWorkGuidePrompt_(context) {
   return [
     'あなたは、他資料を探さずに最後まで実行できる作業ガイドを作ります。',
-    '出力は JSON オブジェクトのみ。Markdown のコードフェンスや前後の説明は禁止です。',
+    '出力は JSON オブジェクトのみを ```json コードブロックで囲んで返してください。コードブロックの前後に説明文を書かないでください。',
+    'workGuideId と version は入力コンテキストの値をそのまま使います。workGuideId が空文字の場合は空文字のままにし、新しいIDを発明しないでください。',
     'schemaVersion は 1.1。correctChoiceIndexes と同様、配列や型を厳密に守ってください。',
     '手順タイプは input または script のみです。表示専用手順は禁止です。',
     '各手順には具体的な description と completionCriteria が必須です。作業対象URLが分かる場合は必ず url に設定します。',
@@ -46,5 +47,23 @@ function buildWorkGuidePrompt_(context) {
       steps: [{ stepId: 'S1', order: 1, type: 'input', title: '手順名', description: '操作と判断の説明', url: 'https://...', inputs: [{ inputId: 'I1', label: '結果', inputType: 'text', required: true }], completionCriteria: '客観的に確認できる完了条件', sourceReferences: [] }],
       sourceSnapshots: context.selectedSources.map(function (source) { return { fileId: source.fileId, fileName: source.fileName, snapshotAt: source.snapshotAt }; })
     }, null, 2)
+  ].join('\n');
+}
+
+function buildWorkGuideRevisionPrompt_(guide, feedback) {
+  return [
+    'あなたは、作業ガイドJSONのドラフトを人間のレビュー指摘に基づいて修正します。',
+    '次の制約を厳守してください。',
+    '- 出力は修正後の作業ガイド JSON オブジェクト全体のみを ```json コードブロックで囲んで返す。コードブロックの前後に説明文を書かない。',
+    '- schemaVersion / workGuideId / version は現在のドラフトの値を変更しない。',
+    '- レビュー指摘に関係しない箇所は不要に変更しない。',
+    '- 手順タイプは input または script のみ。各手順の description と completionCriteria は必須。',
+    '- sourceReferences には sourceSnapshots にある fileId だけを指定する。',
+    '',
+    '現在のドラフト:',
+    JSON.stringify(guide, null, 2),
+    '',
+    'レビュー指摘:',
+    feedback
   ].join('\n');
 }

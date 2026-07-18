@@ -45,6 +45,7 @@ function startWorkGuideRevision(workGuideId) {
     const data = parseJsonCell_(session.dataJson, {});
     const loaded = getWorkGuideOrThrow_(workGuideId, Number(record.currentVersion));
     data.importedWorkGuide = loaded.guide;
+    data.revisionWorkGuideId = String(record.workGuideId);
     data.selectedSources = loaded.guide.sourceSnapshots || [];
     updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: 9, status: 'in_progress', dataJson: data, updatedAt: nowIso_() });
     return { success: true, session: hydrateBuildSession_(Object.assign(session, { currentStep: 9, dataJson: data })) };
@@ -56,7 +57,7 @@ function saveWorkGuideBuildProgress(buildSessionId, step, patch) {
     const session = requireBuildSession_(buildSessionId);
     assertApp_(session.status === 'in_progress' || session.status === 'draft', 'BUILD_SESSION_CLOSED', 'この作成セッションは完了済みです。');
     const stepNumber = Number(step);
-    assertApp_(Number.isInteger(stepNumber) && stepNumber >= 1 && stepNumber <= 10, 'VALIDATION_ERROR', '作成ステップは1〜10です。');
+    assertApp_(Number.isInteger(stepNumber) && stepNumber >= 1 && stepNumber <= 11, 'VALIDATION_ERROR', '作成ステップは1〜11です。');
     const data = parseJsonCell_(session.dataJson, {});
     const allowedKeys = ['knownPrerequisites', 'prerequisiteAnswers', 'selectedSources', 'importedWorkGuide'];
     Object.keys(patch || {}).forEach(function (key) {
@@ -86,8 +87,8 @@ function prepareWorkGuidePrompt(buildSessionId, fileIds, knownPrerequisites, pre
       }),
       selectedSources: selectedSources,
       allowedScripts: listRegisteredActions_(),
-      workGuideId: data.importedWorkGuide && data.importedWorkGuide.workGuideId ? data.importedWorkGuide.workGuideId : '',
-      version: data.importedWorkGuide && data.importedWorkGuide.version ? Number(data.importedWorkGuide.version) + 1 : 1
+      workGuideId: data.revisionWorkGuideId || '',
+      version: data.revisionWorkGuideId ? Number(requireWorkGuideRecord_(data.revisionWorkGuideId).currentVersion) + 1 : 1
     };
     updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: 7, dataJson: data, updatedAt: nowIso_() });
     return { success: true, prompt: buildWorkGuidePrompt_(context), selectedSources: data.selectedSources };
@@ -99,11 +100,25 @@ function importWorkGuideToBuild(buildSessionId, rawText) {
     const session = requireBuildSession_(buildSessionId);
     const data = parseJsonCell_(session.dataJson, {});
     const guide = parsePastedJson_(rawText);
+    // AIが発明したIDで保存に失敗しないよう、改訂時は元のID、新規作成時は空文字へ正規化する。
+    guide.workGuideId = data.revisionWorkGuideId || '';
     if (!guide.sourceSnapshots || !guide.sourceSnapshots.length) guide.sourceSnapshots = data.selectedSources || [];
     validateWorkGuide_(guide);
     data.importedWorkGuide = guide;
     updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: 9, dataJson: data, updatedAt: nowIso_() });
     return { success: true, workGuide: guide };
+  });
+}
+
+function prepareWorkGuideRevisionPrompt(buildSessionId, feedback) {
+  return withClientError_(function () {
+    const session = requireBuildSession_(buildSessionId);
+    const data = parseJsonCell_(session.dataJson, {});
+    assertApp_(isPlainObject_(data.importedWorkGuide), 'DRAFT_NOT_FOUND', '先に STEP 8 で作業ガイドJSONを取り込んでください。');
+    assertApp_(nonEmptyString_(feedback), 'VALIDATION_ERROR', 'レビュー指摘を入力してください。');
+    data.reviewFeedbacks = (Array.isArray(data.reviewFeedbacks) ? data.reviewFeedbacks : []).concat([{ feedback: feedback.trim(), createdAt: nowIso_() }]);
+    updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: 9, dataJson: data, updatedAt: nowIso_() });
+    return { success: true, prompt: buildWorkGuideRevisionPrompt_(data.importedWorkGuide, feedback.trim()) };
   });
 }
 
