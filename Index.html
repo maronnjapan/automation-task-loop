@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <base target="_top">
+    <?!= include('Styles'); ?>
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <h1><?= appName ?></h1>
+        <p>会議を理解し、実行可能な作業ガイドへつなげる</p>
+      </div>
+      <span id="global-status" class="status-pill">読込中</span>
+    </header>
+    <nav class="app-nav" aria-label="メインメニュー">
+      <button data-view="dashboard" class="active">ダッシュボード</button>
+      <button data-view="meetings">会議解析</button>
+      <button data-view="quiz">理解度クイズ</button>
+      <button data-view="actions">作業候補</button>
+      <button data-view="builder">ガイド作成</button>
+      <button data-view="guides">作業ガイド</button>
+      <button data-view="execution">実行</button>
+      <button data-view="admin">管理・診断</button>
+    </nav>
+    <main id="app-main">
+      <? if (setupMessage) { ?>
+        <div class="notice info"><strong><?= setupMessage ?></strong></div>
+      <? } ?>
+      <?!= include('DashboardView'); ?>
+      <?!= include('MeetingView'); ?>
+      <?!= include('QuizView'); ?>
+      <?!= include('ActionView'); ?>
+      <?!= include('WorkGuideBuildView'); ?>
+      <?!= include('WorkGuideView'); ?>
+      <?!= include('WorkGuideExecutionView'); ?>
+    </main>
+    <div id="toast" role="status" aria-live="polite"></div>
+    <div id="busy" class="busy hidden" aria-live="assertive"><div class="spinner"></div><span>処理中...</span></div>
+    <?!= include('Client'); ?>
+  </body>
+</html>

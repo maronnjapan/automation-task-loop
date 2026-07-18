@@ -1,0 +1,15 @@
+<section id="view-builder" class="view">
+  <div class="page-heading"><div><p class="eyebrow">PHASE 4</p><h2>作業ガイド作成</h2></div><span id="build-session-label"></span></div>
+  <div id="builder-empty" class="notice info">作業候補画面から、必要な候補の「ガイド作成」を押してください。</div>
+  <div id="builder-workspace" class="hidden">
+    <ol id="builder-stepper" class="stepper"></ol>
+    <article class="panel"><h3>STEP 1 作業候補を確認する</h3><div id="builder-action"></div></article>
+    <article class="panel"><h3>STEP 2 現在分かっている前提条件を確認する</h3><label>1行に1件<textarea id="known-prerequisites" rows="4"></textarea></label></article>
+    <article class="panel"><h3>STEP 3–4 AIが整理した不足条件へ回答する</h3><p class="muted">会議解析のAI回答で作られた質問です。これによりAI往復を基本2回に保ちます。</p><div id="prerequisite-questions"></div></article>
+    <article class="panel"><h3>STEP 5–6 過去資料を検索・選択する</h3><div class="inline-form"><label>Drive検索<input id="source-query" minlength="2"></label><button onclick="App.searchSources()">検索</button></div><div id="source-results" class="item-list"></div></article>
+    <article class="panel"><h3>STEP 7 AI投入用コンテキスト</h3><button onclick="App.prepareGuidePrompt()">コンテキストを作成</button><label>ガイド生成プロンプト<textarea id="guide-prompt" rows="10" readonly></textarea></label><button onclick="App.copyText('guide-prompt')">プロンプトをコピー</button></article>
+    <article class="panel"><h3>STEP 8 作業ガイドJSONを取り込む</h3><label>AI回答<textarea id="guide-json-import" rows="10"></textarea></label><button onclick="App.importGuide()">検証して取り込む</button><div id="guide-import-validation" class="validation-box hidden"></div></article>
+    <article id="guide-editor-panel" class="panel hidden"><h3>STEP 9 編集・確認</h3><div id="guide-editor"></div><div class="button-row"><button class="secondary" onclick="App.saveBuildDraft()">一時保存</button><button onclick="App.addGuideStep()">手順を追加</button></div></article>
+    <article id="guide-save-panel" class="panel hidden"><h3>STEP 10 Google Driveへ保存</h3><div id="save-preview"></div><label class="check-line"><input id="guide-save-confirm" type="checkbox"> 内容と保存先を確認しました</label><button id="save-guide-button" onclick="App.saveGuide()">Googleドキュメント + JSON を保存</button><div id="guide-save-result"></div></article>
+  </div>
+</section>

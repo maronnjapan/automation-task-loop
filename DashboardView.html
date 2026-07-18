@@ -1,0 +1,16 @@
+<section id="view-dashboard" class="view active">
+  <div class="page-heading">
+    <div><p class="eyebrow">OVERVIEW</p><h2>ダッシュボード</h2></div>
+    <button class="secondary" onclick="App.refreshDashboard()">更新</button>
+  </div>
+  <div id="setup-warning" class="notice warning hidden">
+    <strong>初期設定が必要です。</strong>
+    <p>自動デプロイスクリプトを使わなかった場合は、ここから Drive フォルダと管理シートを一括作成できます。</p>
+    <button onclick="App.runInitialSetup()">初期設定を実行</button>
+  </div>
+  <div id="dashboard-counts" class="metric-grid"></div>
+  <div class="two-columns">
+    <article class="panel"><h3>最短フロー</h3><ol class="flow-list"><li>文字起こしを登録・分類</li><li>解析プロンプトをコピーして AI 回答を保存</li><li>クイズで理解を確認</li><li>必要な作業候補だけガイド化</li><li>後日、保存済みガイドを実行</li></ol></article>
+    <article class="panel"><h3>15分目標</h3><p>会議終了からガイド保存までの時間を保存結果で表示します。AIとの基本往復は「会議解析」「ガイド生成」の2回です。</p><button onclick="App.showView('meetings')">会議を登録</button></article>
+  </div>
+</section>

@@ -1,0 +1,646 @@
+<script>
+const App = (function () {
+  'use strict';
+
+  const state = {
+    bootstrap: null,
+    meetings: [],
+    selectedMeetingId: '',
+    quiz: null,
+    buildSession: null,
+    sourceResults: [],
+    editGuide: null,
+    selectedGuide: null,
+    preflight: null,
+    execution: null,
+    executionGuide: null,
+    saveRequestToken: ''
+  };
+
+  function server(name) {
+    const args = Array.prototype.slice.call(arguments, 1);
+    return new Promise(function (resolve, reject) {
+      const runner = google.script.run.withSuccessHandler(resolve).withFailureHandler(function (error) {
+        reject(new Error(error && error.message ? error.message : String(error)));
+      });
+      runner[name].apply(runner, args);
+    });
+  }
+
+  async function call(name) {
+    const args = Array.prototype.slice.call(arguments, 1);
+    setBusy(true);
+    try {
+      const result = await server.apply(null, [name].concat(args));
+      if (!result || result.success === false) throw clientError(result);
+      return result;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function clientError(result) {
+    const error = new Error(result && result.error ? result.error : '処理に失敗しました。');
+    error.details = result && result.details;
+    error.result = result;
+    return error;
+  }
+
+  async function init() {
+    bindNavigation();
+    try {
+      state.bootstrap = await call('getBootstrapData');
+      document.getElementById('global-status').textContent = state.bootstrap.configured ? '設定済み' : '要セットアップ';
+      document.getElementById('setup-warning').classList.toggle('hidden', state.bootstrap.configured);
+      renderDashboard();
+      if (state.bootstrap.configured) await loadMeetings();
+    } catch (error) {
+      showError(error);
+      document.getElementById('global-status').textContent = 'エラー';
+    }
+  }
+
+  function bindNavigation() {
+    document.querySelectorAll('.app-nav button').forEach(function (button) {
+      button.addEventListener('click', function () { showView(button.dataset.view); });
+    });
+    const transcriptSelect = document.getElementById('transcript-select');
+    transcriptSelect.addEventListener('change', function () { document.getElementById('transcript-file-id').value = transcriptSelect.value; });
+  }
+
+  async function showView(name) {
+    document.querySelectorAll('.view').forEach(function (view) { view.classList.remove('active'); });
+    document.querySelectorAll('.app-nav button').forEach(function (button) { button.classList.toggle('active', button.dataset.view === name); });
+    const view = document.getElementById('view-' + name);
+    if (view) view.classList.add('active');
+    if (!state.bootstrap || !state.bootstrap.configured) return;
+    try {
+      if (name === 'dashboard') await refreshDashboard();
+      if (name === 'meetings') await loadMeetings();
+      if (name === 'quiz') await populateQuizMeetings();
+      if (name === 'actions') await loadActions();
+      if (name === 'guides') await loadGuides();
+      if (name === 'execution') await loadExecutions();
+      if (name === 'admin') { await runDiagnostics(); await loadAllowedActions(); }
+    } catch (error) { showError(error); }
+  }
+
+  async function refreshDashboard() {
+    state.bootstrap = await call('getBootstrapData');
+    renderDashboard();
+  }
+
+  async function runInitialSetup() {
+    try {
+      const result = await call('runSetupGuide');
+      if (!result.success) throw new Error('初期設定は実行されましたが、診断エラーが残っています。');
+      toast('Drive フォルダと管理スプレッドシートを作成しました。');
+      state.bootstrap = await call('getBootstrapData');
+      document.getElementById('setup-warning').classList.add('hidden');
+      document.getElementById('global-status').textContent = '設定済み';
+      renderDashboard();
+      await loadMeetings();
+    } catch (error) { showError(error); }
+  }
+
+  function renderDashboard() {
+    const counts = state.bootstrap && state.bootstrap.counts ? state.bootstrap.counts : { meetings: 0, actions: 0, guides: 0, activeExecutions: 0 };
+    const labels = [['meetings', '登録会議'], ['actions', '未選択の作業候補'], ['guides', '作業ガイド'], ['activeExecutions', '進行中・中断中']];
+    document.getElementById('dashboard-counts').innerHTML = labels.map(function (item) {
+      return '<div class="metric"><span>' + item[1] + '</span><strong>' + escapeHtml(counts[item[0]]) + '</strong></div>';
+    }).join('');
+  }
+
+  async function loadMeetings() {
+    const results = await Promise.all([call('listMeetings'), call('listTranscriptFiles')]);
+    state.meetings = results[0].meetings || [];
+    const settings = state.bootstrap.settings || {};
+    document.getElementById('meeting-category').innerHTML = (settings.categories || []).map(function (category) { return '<option>' + escapeHtml(category) + '</option>'; }).join('');
+    document.getElementById('transcript-select').innerHTML = '<option value="">フォルダから選択</option>' + (results[1].files || []).map(function (file) { return '<option value="' + attr(file.fileId) + '">' + escapeHtml(file.name) + '</option>'; }).join('');
+    document.getElementById('meeting-list').innerHTML = state.meetings.length ? state.meetings.map(function (meeting) {
+      return '<div class="list-row"><div><strong>' + escapeHtml(meeting.title) + '</strong><div class="meta">' + escapeHtml(meeting.meetingId + ' / ' + meeting.category + ' / ' + meeting.analysisStatus) + '</div></div><button class="secondary" onclick="App.selectMeeting(\'' + attr(meeting.meetingId) + '\')">解析</button></div>';
+    }).join('') : 'まだありません';
+    populateQuizMeetings(false);
+  }
+
+  async function registerMeeting(event) {
+    event.preventDefault();
+    try {
+      const form = new FormData(event.target);
+      const payload = Object.fromEntries(form.entries());
+      payload.transcriptFileId = document.getElementById('transcript-file-id').value.trim();
+      if (!payload.transcriptFileId) throw new Error('文字起こしファイルを選択するか、ファイルIDを入力してください。');
+      const result = await call('registerMeeting', payload);
+      toast('会議を登録しました。続けて解析プロンプトを作成します。');
+      event.target.reset();
+      await loadMeetings();
+      await selectMeeting(result.meeting.meetingId);
+    } catch (error) { showError(error); }
+  }
+
+  async function selectMeeting(meetingId) {
+    try {
+      state.selectedMeetingId = meetingId;
+      const meeting = state.meetings.find(function (item) { return item.meetingId === meetingId; });
+      const result = await call('getMeetingAnalysisPrompt', meetingId);
+      document.getElementById('analysis-workspace').classList.remove('hidden');
+      document.getElementById('analysis-meeting-label').textContent = meeting ? meeting.title : meetingId;
+      document.getElementById('analysis-prompt').value = result.prompt;
+      document.getElementById('analysis-json').value = '';
+      document.getElementById('save-analysis-button').disabled = meeting && meeting.analysisStatus === 'completed';
+      showView('meetings');
+      document.getElementById('analysis-workspace').scrollIntoView({ behavior: 'smooth' });
+    } catch (error) { showError(error); }
+  }
+
+  async function validateAnalysis() {
+    const box = document.getElementById('analysis-validation');
+    try {
+      const result = await call('validateMeetingAnalysisJson', document.getElementById('analysis-json').value);
+      box.className = 'validation-box success';
+      box.textContent = '検証OK: 作業候補 ' + result.analysis.actionCandidates.length + '件 / クイズ ' + result.analysis.quiz.questions.length + '問';
+    } catch (error) { renderValidationError(box, error); }
+  }
+
+  async function saveAnalysis() {
+    const button = document.getElementById('save-analysis-button');
+    const box = document.getElementById('analysis-validation');
+    button.disabled = true;
+    try {
+      const result = await call('saveMeetingAnalysis', state.selectedMeetingId, document.getElementById('analysis-json').value);
+      box.className = 'validation-box success';
+      box.innerHTML = '保存しました。作業候補 ' + result.actionCount + '件 / クイズ ' + result.questionCount + '問。 <a href="' + attr(result.summaryFileUrl) + '" target="_blank">会議要約を開く</a>';
+      toast('会議解析を保存しました。');
+      await loadMeetings();
+    } catch (error) { button.disabled = false; renderValidationError(box, error); }
+  }
+
+  async function populateQuizMeetings(fetch) {
+    if (fetch !== false && !state.meetings.length) {
+      const result = await call('listMeetings');
+      state.meetings = result.meetings || [];
+    }
+    const analyzed = state.meetings.filter(function (meeting) { return meeting.analysisStatus === 'completed'; });
+    document.getElementById('quiz-meeting-select').innerHTML = analyzed.length ? analyzed.map(function (meeting) { return '<option value="' + attr(meeting.meetingId) + '">' + escapeHtml(meeting.title) + '</option>'; }).join('') : '<option value="">解析済み会議なし</option>';
+  }
+
+  async function openQuiz() {
+    try {
+      const meetingId = document.getElementById('quiz-meeting-select').value;
+      if (!meetingId) throw new Error('解析済み会議を選択してください。');
+      state.quiz = await call('openQuiz', meetingId, document.getElementById('quiz-mode').value);
+      renderQuiz();
+    } catch (error) { showError(error); }
+  }
+
+  function renderQuiz() {
+    const quiz = state.quiz.quiz;
+    const session = state.quiz.session;
+    document.getElementById('quiz-workspace').classList.remove('hidden');
+    document.getElementById('quiz-header').innerHTML = '<h3>' + escapeHtml(quiz.quizTitle) + '</h3><p class="meta">' + quiz.questions.length + '問 / 回答は自動保存されます</p>';
+    if (session.mode === 'single') renderSingleQuiz(); else renderBatchQuiz();
+  }
+
+  function renderSingleQuiz() {
+    const quiz = state.quiz.quiz;
+    const session = state.quiz.session;
+    let question = quiz.questions.find(function (item) { return session.questionStates[item.questionId] !== 'explanation_viewed'; });
+    if (!question) {
+      document.getElementById('quiz-questions').innerHTML = '<p>全問の回答と解説確認が終わりました。</p><button onclick="App.submitCurrentQuiz()">採点結果を保存</button>';
+      return;
+    }
+    const prior = session.answers[question.questionId] || [];
+    document.getElementById('quiz-questions').innerHTML = questionHtml(question, prior) + '<button onclick="App.answerSingle(\'' + attr(question.questionId) + '\')">回答する</button><div id="single-explanation"></div>';
+  }
+
+  function renderBatchQuiz() {
+    const quiz = state.quiz.quiz;
+    const answers = state.quiz.session.answers || {};
+    document.getElementById('quiz-questions').innerHTML = quiz.questions.map(function (question) { return questionHtml(question, answers[question.questionId] || []); }).join('') + '<button onclick="App.submitBatchQuiz()">全回答を保存して採点</button>';
+  }
+
+  function questionHtml(question, selected) {
+    const multiple = question.type === 'multi_choice';
+    return '<fieldset class="question" data-question="' + attr(question.questionId) + '"><legend>' + escapeHtml(question.question) + (multiple ? '（正解 ' + question.correctCount + '個）' : '') + '</legend>' + question.choices.map(function (choice, index) {
+      return '<label class="choice"><input type="' + (multiple ? 'checkbox' : 'radio') + '" name="q-' + attr(question.questionId) + '" value="' + index + '" ' + (selected.indexOf(index) >= 0 ? 'checked' : '') + '>' + escapeHtml(choice) + '</label>';
+    }).join('') + '</fieldset>';
+  }
+
+  function selectedChoices(questionId) {
+    return Array.from(document.querySelectorAll('[name="q-' + cssEscape(questionId) + '"]:checked')).map(function (input) { return Number(input.value); });
+  }
+
+  async function answerSingle(questionId) {
+    try {
+      const choices = selectedChoices(questionId);
+      const result = await call('saveQuizAnswer', state.quiz.session.quizSessionId, questionId, choices);
+      state.quiz.session.answers[questionId] = choices;
+      state.quiz.session.questionStates[questionId] = 'answered';
+      const explanation = document.getElementById('single-explanation');
+      explanation.className = result.result.correct ? 'validation-box success' : 'validation-box error';
+      explanation.innerHTML = '<strong>' + (result.result.correct ? '正解' : '不正解') + '</strong><p>' + escapeHtml(result.result.explanation) + '</p><button onclick="App.continueSingle(\'' + attr(questionId) + '\')">解説を確認して次へ</button>';
+    } catch (error) { showError(error); }
+  }
+
+  async function continueSingle(questionId) {
+    try {
+      await call('markQuizExplanationViewed', state.quiz.session.quizSessionId, questionId);
+      state.quiz.session.questionStates[questionId] = 'explanation_viewed';
+      renderSingleQuiz();
+    } catch (error) { showError(error); }
+  }
+
+  async function submitBatchQuiz() {
+    try {
+      for (const question of state.quiz.quiz.questions) {
+        const choices = selectedChoices(question.questionId);
+        await call('saveQuizAnswer', state.quiz.session.quizSessionId, question.questionId, choices);
+        state.quiz.session.answers[question.questionId] = choices;
+      }
+      await submitCurrentQuiz();
+    } catch (error) { showError(error); }
+  }
+
+  async function submitCurrentQuiz() {
+    try {
+      const result = await call('submitQuiz', state.quiz.session.quizSessionId);
+      document.getElementById('quiz-result').innerHTML = '<div class="validation-box success"><strong>' + result.score.correctCount + ' / ' + result.score.total + '問正解（' + result.score.percentage + '%）</strong></div>' + result.incorrectExplanations.map(function (item) { return '<div class="validation-box error"><strong>' + escapeHtml(item.questionId) + '</strong>: ' + escapeHtml(item.explanation) + '</div>'; }).join('');
+      document.getElementById('quiz-questions').innerHTML = '';
+    } catch (error) { showError(error); }
+  }
+
+  async function loadActions() {
+    const result = await call('listActionCandidates', '');
+    const actions = result.actions || [];
+    document.getElementById('action-list').innerHTML = actions.length ? actions.map(function (action) {
+      return '<article class="item-card"><h3>' + escapeHtml(action.title) + '</h3><p>' + escapeHtml(action.description) + '</p><p class="meta">' + escapeHtml(action.actionId + ' / 状態: ' + action.status) + '</p>' + (action.status === 'guide_ready' ? '<span class="status-pill">ガイド保存済み</span>' : '<button onclick="App.startBuild(\'' + attr(action.actionId) + '\')">ガイド作成</button>') + '</article>';
+    }).join('') : '作業候補はまだありません';
+  }
+
+  async function startBuild(actionId) {
+    try {
+      const result = await call('startWorkGuideBuild', actionId);
+      state.buildSession = result.session;
+      state.editGuide = result.session.data.importedWorkGuide || null;
+      renderBuilder();
+      showView('builder');
+    } catch (error) { showError(error); }
+  }
+
+  async function reviseGuide(workGuideId) {
+    try {
+      const result = await call('startWorkGuideRevision', workGuideId);
+      state.buildSession = result.session;
+      state.editGuide = result.session.data.importedWorkGuide;
+      state.saveRequestToken = '';
+      renderBuilder();
+      showView('builder');
+    } catch (error) { showError(error); }
+  }
+
+  function renderBuilder() {
+    const session = state.buildSession;
+    if (!session) return;
+    document.getElementById('builder-empty').classList.add('hidden');
+    document.getElementById('builder-workspace').classList.remove('hidden');
+    document.getElementById('build-session-label').textContent = session.buildSessionId;
+    document.getElementById('builder-stepper').innerHTML = Array.from({ length: 10 }, function (_, index) {
+      const step = index + 1;
+      return '<li class="' + (step < session.currentStep ? 'done' : step === session.currentStep ? 'current' : '') + '">STEP ' + step + '</li>';
+    }).join('');
+    document.getElementById('builder-action').innerHTML = '<h4>' + escapeHtml(session.data.action.title) + '</h4><p>' + escapeHtml(session.data.action.description) + '</p>';
+    document.getElementById('known-prerequisites').value = (session.data.knownPrerequisites || []).join('\n');
+    document.getElementById('prerequisite-questions').innerHTML = (session.data.prerequisiteQuestions || []).map(function (question, index) {
+      return '<label>' + escapeHtml(question) + '<textarea rows="2" data-prereq-index="' + index + '">' + escapeHtml((session.data.prerequisiteAnswers || {})[question] || '') + '</textarea></label>';
+    }).join('');
+    if (state.editGuide) renderGuideEditor();
+  }
+
+  async function searchSources() {
+    try {
+      const result = await call('searchDriveSources', document.getElementById('source-query').value);
+      state.sourceResults = result.files || [];
+      const selected = (state.buildSession.data.selectedSources || []).map(function (source) { return source.fileId; });
+      document.getElementById('source-results').innerHTML = state.sourceResults.length ? state.sourceResults.map(function (file) {
+        return '<label class="list-row"><span><strong>' + escapeHtml(file.name) + '</strong><span class="meta">' + escapeHtml(file.updatedAt || '') + '</span></span><input type="checkbox" name="source-file" value="' + attr(file.fileId) + '" ' + (selected.indexOf(file.fileId) >= 0 ? 'checked' : '') + '></label>';
+      }).join('') : '<p class="empty">該当ファイルなし</p>';
+    } catch (error) { showError(error); }
+  }
+
+  function collectPrerequisiteData() {
+    const known = document.getElementById('known-prerequisites').value.split(/\r?\n/).map(function (value) { return value.trim(); }).filter(Boolean);
+    const answers = {};
+    (state.buildSession.data.prerequisiteQuestions || []).forEach(function (question, index) {
+      const field = document.querySelector('[data-prereq-index="' + index + '"]');
+      answers[question] = field ? field.value.trim() : '';
+    });
+    return { known: known, answers: answers };
+  }
+
+  async function prepareGuidePrompt() {
+    try {
+      const selectedIds = Array.from(document.querySelectorAll('[name="source-file"]:checked')).map(function (input) { return input.value; });
+      const prereqs = collectPrerequisiteData();
+      const result = await call('prepareWorkGuidePrompt', state.buildSession.buildSessionId, selectedIds, prereqs.known, prereqs.answers);
+      document.getElementById('guide-prompt').value = result.prompt;
+      state.buildSession.data.knownPrerequisites = prereqs.known;
+      state.buildSession.data.prerequisiteAnswers = prereqs.answers;
+      state.buildSession.data.selectedSources = result.selectedSources;
+      state.buildSession.currentStep = 7;
+      renderBuilder();
+      toast('AI投入用コンテキストを作成しました。');
+    } catch (error) { showError(error); }
+  }
+
+  async function importGuide() {
+    const box = document.getElementById('guide-import-validation');
+    try {
+      const result = await call('importWorkGuideToBuild', state.buildSession.buildSessionId, document.getElementById('guide-json-import').value);
+      state.editGuide = result.workGuide;
+      state.saveRequestToken = '';
+      state.buildSession.data.importedWorkGuide = result.workGuide;
+      state.buildSession.currentStep = 9;
+      box.className = 'validation-box success';
+      box.textContent = '検証OK。下の編集画面で内容を確認してください。';
+      renderBuilder();
+      document.getElementById('guide-editor-panel').scrollIntoView({ behavior: 'smooth' });
+    } catch (error) { renderValidationError(box, error); }
+  }
+
+  function renderGuideEditor() {
+    const guide = state.editGuide;
+    document.getElementById('guide-editor-panel').classList.remove('hidden');
+    document.getElementById('guide-save-panel').classList.remove('hidden');
+    document.getElementById('guide-editor').innerHTML = '<div class="field-grid"><label>作業ガイド名<input data-guide-field="title" value="' + attr(guide.title || '') + '"></label><label>目的<input data-guide-field="goal" value="' + attr(guide.goal || '') + '"></label></div>' +
+      arrayFieldHtml('assumptions', '背景・既知事項', guide.assumptions) + arrayFieldHtml('prerequisites', '前提条件・必要な権限', guide.prerequisites) + arrayFieldHtml('warnings', '注意事項', guide.warnings) +
+      '<h4>手順</h4><div id="guide-step-editors">' + guide.steps.map(stepEditorHtml).join('') + '</div>';
+    updateSavePreview();
+  }
+
+  function arrayFieldHtml(field, label, values) {
+    return '<label>' + label + '（1行1件）<textarea rows="3" data-guide-field="' + field + '">' + escapeHtml((values || []).join('\n')) + '</textarea></label>';
+  }
+
+  function stepEditorHtml(step, index) {
+    return '<div class="guide-step-editor" data-step-index="' + index + '"><div class="step-actions"><strong>手順 ' + (index + 1) + '</strong><button class="secondary" onclick="App.moveGuideStep(' + index + ',-1)">↑</button><button class="secondary" onclick="App.moveGuideStep(' + index + ',1)">↓</button><button class="secondary" onclick="App.duplicateGuideStep(' + index + ')">複製</button><button class="danger" onclick="App.deleteGuideStep(' + index + ')">削除</button></div><div class="field-grid">' +
+      '<label>手順名<input data-step-field="title" value="' + attr(step.title || '') + '"></label><label>タイプ<select data-step-field="type"><option value="input" ' + (step.type === 'input' ? 'selected' : '') + '>input</option><option value="script" ' + (step.type === 'script' ? 'selected' : '') + '>script</option></select></label>' +
+      '<label>URL<input data-step-field="url" value="' + attr(step.url || '') + '"></label><label>参照資料ID（カンマ区切り）<input data-step-field="sourceReferences" value="' + attr((step.sourceReferences || []).join(',')) + '"></label></div>' +
+      '<label>手順説明<textarea rows="3" data-step-field="description">' + escapeHtml(step.description || '') + '</textarea></label><label>入力項目 JSON<textarea rows="4" data-step-field="inputs">' + escapeHtml(JSON.stringify(step.inputs || [], null, 2)) + '</textarea></label>' +
+      '<div class="field-grid"><label>登録スクリプトID<input data-step-field="scriptId" value="' + attr(step.scriptId || '') + '"></label><label>スクリプトパラメータ JSON<textarea rows="3" data-step-field="scriptParams">' + escapeHtml(JSON.stringify(step.scriptParams || {}, null, 2)) + '</textarea></label></div>' +
+      '<label>完了条件<textarea rows="2" data-step-field="completionCriteria">' + escapeHtml(step.completionCriteria || '') + '</textarea></label></div>';
+  }
+
+  function collectGuideEditor() {
+    const guide = JSON.parse(JSON.stringify(state.editGuide));
+    document.querySelectorAll('[data-guide-field]').forEach(function (field) {
+      if (['assumptions', 'prerequisites', 'warnings'].indexOf(field.dataset.guideField) >= 0) guide[field.dataset.guideField] = field.value.split(/\r?\n/).map(function (value) { return value.trim(); }).filter(Boolean);
+      else guide[field.dataset.guideField] = field.value.trim();
+    });
+    guide.steps = Array.from(document.querySelectorAll('.guide-step-editor')).map(function (editor, index) {
+      const values = {};
+      editor.querySelectorAll('[data-step-field]').forEach(function (field) { values[field.dataset.stepField] = field.value; });
+      const step = {
+        stepId: (guide.steps[index] && guide.steps[index].stepId) || 'S' + (index + 1), order: index + 1,
+        type: values.type, title: values.title.trim(), description: values.description.trim(), url: values.url.trim(),
+        completionCriteria: values.completionCriteria.trim(),
+        sourceReferences: values.sourceReferences.split(',').map(function (value) { return value.trim(); }).filter(Boolean)
+      };
+      if (step.type === 'input') step.inputs = JSON.parse(values.inputs || '[]');
+      else { step.scriptId = values.scriptId.trim(); step.scriptParams = JSON.parse(values.scriptParams || '{}'); }
+      return step;
+    });
+    guide.steps.forEach(function (step, index) { step.stepId = 'S' + (index + 1); step.order = index + 1; });
+    return guide;
+  }
+
+  function syncGuideEditor() {
+    try { state.editGuide = collectGuideEditor(); return true; }
+    catch (error) { showError(new Error('入力項目またはスクリプトパラメータの JSON が不正です: ' + error.message)); return false; }
+  }
+
+  function addGuideStep() {
+    if (!syncGuideEditor()) return;
+    state.editGuide.steps.push({ stepId: '', order: state.editGuide.steps.length + 1, type: 'input', title: '', description: '', url: '', inputs: [{ inputId: 'I1', label: '結果', inputType: 'text', required: true }], completionCriteria: '', sourceReferences: [] });
+    normalizeGuideSteps(); renderGuideEditor();
+  }
+
+  function deleteGuideStep(index) { if (!syncGuideEditor()) return; if (state.editGuide.steps.length <= 1) return showError(new Error('手順は1件以上必要です。')); state.editGuide.steps.splice(index, 1); normalizeGuideSteps(); renderGuideEditor(); }
+  function moveGuideStep(index, direction) { if (!syncGuideEditor()) return; const target = index + direction; if (target < 0 || target >= state.editGuide.steps.length) return; const item = state.editGuide.steps.splice(index, 1)[0]; state.editGuide.steps.splice(target, 0, item); normalizeGuideSteps(); renderGuideEditor(); }
+  function duplicateGuideStep(index) { if (!syncGuideEditor()) return; const copy = JSON.parse(JSON.stringify(state.editGuide.steps[index])); state.editGuide.steps.splice(index + 1, 0, copy); normalizeGuideSteps(); renderGuideEditor(); }
+  function normalizeGuideSteps() { state.editGuide.steps.forEach(function (step, index) { step.stepId = 'S' + (index + 1); step.order = index + 1; (step.inputs || []).forEach(function (input, inputIndex) { input.inputId = 'I' + (inputIndex + 1); }); }); }
+
+  async function saveBuildDraft() {
+    if (!syncGuideEditor()) return;
+    try {
+      await call('saveWorkGuideBuildProgress', state.buildSession.buildSessionId, 9, { importedWorkGuide: state.editGuide });
+      toast('編集内容を一時保存しました。');
+    } catch (error) { showError(error); }
+  }
+
+  function updateSavePreview() {
+    const guide = state.editGuide;
+    document.getElementById('save-preview').innerHTML = '<p><strong>' + escapeHtml(guide.title || '名称未入力') + '</strong></p><p>手順 ' + guide.steps.length + '件 / 参照資料 ' + (guide.sourceSnapshots || []).length + '件</p><p class="muted">同じID・バージョンで GoogleドキュメントとJSONを作成し、管理シートへ登録します。</p>';
+  }
+
+  async function saveGuide() {
+    const output = document.getElementById('guide-save-result');
+    if (!syncGuideEditor()) return;
+    const button = document.getElementById('save-guide-button');
+    button.disabled = true;
+    if (!state.saveRequestToken) state.saveRequestToken = createRequestToken();
+    try {
+      const result = await call('saveWorkGuide', {
+        requestToken: state.saveRequestToken, confirmed: document.getElementById('guide-save-confirm').checked,
+        buildSessionId: state.buildSession.buildSessionId, actionId: state.buildSession.data.action.actionId,
+        meetingId: state.buildSession.data.action.meetingId, workGuide: state.editGuide
+      });
+      if (!result.success) throw clientError(result);
+      output.className = 'validation-box success';
+      output.innerHTML = '<strong>保存完了</strong><p>' + escapeHtml(result.workGuideId + ' v' + result.version) + '</p><p><a target="_blank" href="' + attr(result.documentUrl) + '">Googleドキュメント</a> / <a target="_blank" href="' + attr(result.jsonUrl) + '">JSON</a></p><p>会議終了から ' + result.minutesFromMeetingEnd + '分（15分目標: ' + (result.within15Minutes ? '達成' : '超過') + '）</p>';
+      state.buildSession.currentStep = 10;
+      toast('作業ガイドを2形式で保存しました。');
+    } catch (error) {
+      button.disabled = false;
+      const progress = error.result && error.result.completed;
+      output.className = 'validation-box error';
+      output.innerHTML = '<strong>' + escapeHtml(error.message) + '</strong>' + (progress ? '<p>作成済み: ドキュメント=' + progress.documentCreated + ' / JSON=' + progress.jsonCreated + ' / 管理シート=' + progress.spreadsheetUpdated + '</p>' : '');
+    }
+  }
+
+  async function loadGuides() {
+    const result = await call('listWorkGuides');
+    document.getElementById('guide-list').innerHTML = result.workGuides.length ? result.workGuides.map(function (guide) {
+      return '<article class="item-card"><h3>' + escapeHtml(guide.title) + '</h3><p class="meta">' + escapeHtml(guide.workGuideId + ' / v' + guide.currentVersion) + '</p><p><a target="_blank" href="https://drive.google.com/open?id=' + attr(guide.documentFileId) + '">ドキュメント</a> / <a target="_blank" href="https://drive.google.com/open?id=' + attr(guide.jsonFileId) + '">JSON</a></p><div class="button-row"><button onclick="App.preflightGuide(\'' + attr(guide.workGuideId) + '\',' + Number(guide.currentVersion) + ')">実行前確認</button><button class="secondary" onclick="App.reviseGuide(\'' + attr(guide.workGuideId) + '\')">新バージョン編集</button></div></article>';
+    }).join('') : '作業ガイドはまだありません';
+  }
+
+  async function preflightGuide(workGuideId, versionNo) {
+    try {
+      const result = await call('preflightWorkGuide', workGuideId, versionNo);
+      state.selectedGuide = { workGuideId: workGuideId, versionNo: versionNo };
+      state.preflight = result.preflight;
+      const panel = document.getElementById('preflight-panel');
+      panel.classList.remove('hidden');
+      document.getElementById('preflight-result').innerHTML = '<div class="validation-box ' + (result.preflight.level === 'ok' ? 'success' : 'error') + '"><strong>' + escapeHtml(result.preflight.label) + '</strong></div>' + result.preflight.checks.map(function (check) { return '<div class="check-result ' + attr(check.level) + '">' + escapeHtml(check.message) + '</div>'; }).join('');
+      document.getElementById('preflight-confirm-line').classList.toggle('hidden', result.preflight.level !== 'warning');
+      document.getElementById('start-execution-button').disabled = result.preflight.level === 'unavailable';
+      panel.scrollIntoView({ behavior: 'smooth' });
+    } catch (error) { showError(error); }
+  }
+
+  async function startExecution() {
+    try {
+      const confirmed = document.getElementById('preflight-confirm').checked;
+      const result = await call('startWorkGuideExecution', state.selectedGuide.workGuideId, state.selectedGuide.versionNo, confirmed);
+      state.execution = result.execution;
+      state.executionGuide = result.workGuide;
+      renderExecution();
+      showView('execution');
+    } catch (error) { showError(error); }
+  }
+
+  async function loadExecutions() {
+    const result = await call('listWorkGuideExecutions', '');
+    document.getElementById('execution-list').innerHTML = result.executions.length ? result.executions.map(function (execution) {
+      return '<div class="list-row"><div><strong>' + escapeHtml(execution.executionId) + '</strong><div class="meta">' + escapeHtml(execution.workGuideId + ' / ' + execution.status) + '</div></div><button class="secondary" onclick="App.openExecution(\'' + attr(execution.executionId) + '\')">開く</button></div>';
+    }).join('') : '<p class="empty">実行記録はまだありません</p>';
+  }
+
+  async function openExecution(executionId) {
+    try {
+      const result = await call('getWorkGuideExecution', executionId);
+      state.execution = result.execution;
+      state.executionGuide = result.workGuide;
+      renderExecution();
+    } catch (error) { showError(error); }
+  }
+
+  function renderExecution() {
+    const execution = state.execution;
+    const guide = state.executionGuide;
+    document.getElementById('pause-execution-button').classList.toggle('hidden', execution.status !== 'in_progress');
+    document.getElementById('complete-execution-button').classList.add('hidden');
+    document.getElementById('execution-workspace').classList.remove('hidden');
+    document.getElementById('execution-header').innerHTML = '<h3>' + escapeHtml(guide.title) + '</h3><p class="meta">' + escapeHtml(execution.executionId + ' / ' + execution.status) + '</p><p>完了 ' + ((execution.executionData.completedStepIds || []).length) + ' / ' + guide.steps.length + '手順</p>';
+    if (execution.status === 'paused') {
+      document.getElementById('execution-step').innerHTML = '<div class="notice warning">中断中です。入力内容は保存されています。</div><button onclick="App.resumeExecution()">続きから再開</button>';
+      return;
+    }
+    if (execution.status === 'completed') {
+      document.getElementById('execution-step').innerHTML = '<div class="validation-box success">この作業は完了しています。</div>';
+      return;
+    }
+    const step = guide.steps.find(function (item) { return item.stepId === execution.currentStepId; });
+    if (!step) {
+      document.getElementById('execution-step').innerHTML = '<div class="validation-box success">すべての手順を保存しました。「作業を完了」を押してください。</div>';
+      document.getElementById('complete-execution-button').classList.remove('hidden');
+      return;
+    }
+    let fields = '';
+    if (step.type === 'input') fields = (step.inputs || []).map(function (input) {
+      if (input.inputType === 'check') return '<label class="check-line"><input type="checkbox" data-exec-input="' + attr(input.inputId) + '">' + escapeHtml(input.label) + '</label>';
+      if (input.inputType === 'choice') return '<label>' + escapeHtml(input.label) + '<select data-exec-input="' + attr(input.inputId) + '"><option value="">選択</option>' + (input.choices || []).map(function (choice) { return '<option>' + escapeHtml(choice) + '</option>'; }).join('') + '</select></label>';
+      return '<label>' + escapeHtml(input.label) + '<textarea rows="3" data-exec-input="' + attr(input.inputId) + '"></textarea></label>';
+    }).join('');
+    else {
+      const savedParams = execution.executionData.stepData && execution.executionData.stepData[step.stepId];
+      fields = '<label>実行パラメータ JSON<textarea id="execution-script-params" rows="5">' + escapeHtml(JSON.stringify(savedParams || step.scriptParams || {}, null, 2)) + '</textarea></label><div class="notice warning">登録済みスクリプト「' + escapeHtml(step.scriptId) + '」を実行します。</div>';
+    }
+    document.getElementById('execution-step').innerHTML = '<div class="question"><h4>手順 ' + step.order + ': ' + escapeHtml(step.title) + '</h4><p>' + escapeHtml(step.description) + '</p>' + (step.url ? '<p><a target="_blank" href="' + attr(step.url) + '">作業対象を開く</a></p>' : '') + fields + '<p><strong>完了条件:</strong> ' + escapeHtml(step.completionCriteria) + '</p><button onclick="App.saveCurrentStep()">入力を保存して次へ</button></div>';
+  }
+
+  async function saveCurrentStep() {
+    try {
+      const step = state.executionGuide.steps.find(function (item) { return item.stepId === state.execution.currentStepId; });
+      const values = {};
+      let params = {};
+      if (step.type === 'input') document.querySelectorAll('[data-exec-input]').forEach(function (input) { values[input.dataset.execInput] = input.type === 'checkbox' ? input.checked : input.value; });
+      else params = JSON.parse(document.getElementById('execution-script-params').value || '{}');
+      const result = await call('saveExecutionStep', state.execution.executionId, values, params);
+      state.execution.executionData = result.executionData;
+      state.execution.currentStepId = result.nextStepId;
+      renderExecution();
+      toast('手順を保存しました。');
+    } catch (error) { showError(error); }
+  }
+
+  async function pauseExecution() {
+    try {
+      const notes = window.prompt('再開時に表示するメモ（任意）', state.execution.notes || '') || '';
+      await call('pauseWorkGuideExecution', state.execution.executionId, notes);
+      state.execution.status = 'paused'; state.execution.notes = notes; renderExecution(); toast('中断状態を保存しました。');
+    } catch (error) { showError(error); }
+  }
+
+  async function resumeExecution() {
+    try { await call('resumeWorkGuideExecution', state.execution.executionId); state.execution.status = 'in_progress'; renderExecution(); toast('実行を再開しました。'); }
+    catch (error) { showError(error); }
+  }
+
+  async function completeExecution() {
+    try {
+      const notes = window.prompt('完了メモ（任意）', state.execution.notes || '') || '';
+      const result = await call('completeWorkGuideExecution', state.execution.executionId, notes);
+      state.execution.status = 'completed'; renderExecution(); toast('作業を完了し、実行結果を保存しました。');
+      document.getElementById('execution-step').innerHTML += '<p><a target="_blank" href="' + attr(result.resultFileUrl) + '">実行結果JSONを開く</a></p>';
+    } catch (error) { showError(error); }
+  }
+
+  async function runDiagnostics() {
+    try {
+      const result = await call('getDiagnostics');
+      document.getElementById('diagnostics-result').innerHTML = result.diagnostics.map(function (check) { return '<div class="check-result ' + (check.status === 'ok' ? 'ok' : 'unavailable') + '"><strong>' + escapeHtml(check.name) + '</strong><br>' + escapeHtml(check.message) + '</div>'; }).join('');
+    } catch (error) { showError(error); }
+  }
+
+  async function loadAllowedActions() {
+    try {
+      const result = await call('listAllowedActions');
+      document.getElementById('allowed-actions').innerHTML = result.available.map(function (action) {
+        return '<div class="list-row"><div><strong>' + escapeHtml(action.name) + '</strong><div class="meta">' + escapeHtml(action.scriptId + ' / ' + action.impactNote) + '</div></div>' + (action.registered ? '<button class="danger" onclick="App.unregisterAction(\'' + attr(action.scriptId) + '\')">登録解除</button>' : '<button onclick="App.registerAction(\'' + attr(action.scriptId) + '\')">登録</button>') + '</div>';
+      }).join('');
+    } catch (error) { showError(error); }
+  }
+
+  async function registerAction(scriptId) { try { await call('registerAllowedAction', scriptId); toast('許可済みスクリプトへ登録しました。'); await loadAllowedActions(); } catch (error) { showError(error); } }
+  async function unregisterAction(scriptId) { if (!window.confirm('登録を解除しますか？')) return; try { await call('unregisterAllowedAction', scriptId); toast('登録を解除しました。'); await loadAllowedActions(); } catch (error) { showError(error); } }
+
+  async function copyText(id) {
+    const field = document.getElementById(id);
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(field.value);
+      else { field.select(); document.execCommand('copy'); }
+      toast('クリップボードへコピーしました。');
+    } catch (error) { showError(new Error('コピーできませんでした。テキストを選択して手動でコピーしてください。')); }
+  }
+
+  function renderValidationError(box, error) {
+    box.className = 'validation-box error';
+    const errors = error.details && error.details.errors ? error.details.errors : [];
+    box.innerHTML = '<strong>' + escapeHtml(error.message) + '</strong>' + (errors.length ? '<ul>' + errors.map(function (item) { return '<li>' + escapeHtml(item) + '</li>'; }).join('') + '</ul>' : '');
+  }
+
+  function showError(error) { toast(error.message || String(error), true); }
+  function toast(message, isError) { const element = document.getElementById('toast'); element.textContent = message; element.className = 'show' + (isError ? ' error' : ''); window.clearTimeout(toast.timer); toast.timer = window.setTimeout(function () { element.className = ''; }, 4500); }
+  function setBusy(value) { document.getElementById('busy').classList.toggle('hidden', !value); }
+  function createRequestToken() { return window.crypto && crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + Math.random().toString(36).slice(2); }
+  function escapeHtml(value) { return String(value === undefined || value === null ? '' : value).replace(/[&<>"']/g, function (char) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]; }); }
+  function attr(value) { return escapeHtml(value).replace(/`/g, '&#96;'); }
+  function cssEscape(value) { return window.CSS && CSS.escape ? CSS.escape(value) : String(value).replace(/[^a-zA-Z0-9_-]/g, '\\$&'); }
+
+  return {
+    init: init, showView: showView, refreshDashboard: refreshDashboard, runInitialSetup: runInitialSetup, loadMeetings: loadMeetings, registerMeeting: registerMeeting,
+    selectMeeting: selectMeeting, validateAnalysis: validateAnalysis, saveAnalysis: saveAnalysis, openQuiz: openQuiz,
+    answerSingle: answerSingle, continueSingle: continueSingle, submitBatchQuiz: submitBatchQuiz, submitCurrentQuiz: submitCurrentQuiz,
+    loadActions: loadActions, startBuild: startBuild, reviseGuide: reviseGuide, searchSources: searchSources, prepareGuidePrompt: prepareGuidePrompt,
+    importGuide: importGuide, addGuideStep: addGuideStep, deleteGuideStep: deleteGuideStep, moveGuideStep: moveGuideStep,
+    duplicateGuideStep: duplicateGuideStep, saveBuildDraft: saveBuildDraft, saveGuide: saveGuide, loadGuides: loadGuides,
+    preflightGuide: preflightGuide, startExecution: startExecution, loadExecutions: loadExecutions, openExecution: openExecution,
+    saveCurrentStep: saveCurrentStep, pauseExecution: pauseExecution, resumeExecution: resumeExecution, completeExecution: completeExecution,
+    runDiagnostics: runDiagnostics, loadAllowedActions: loadAllowedActions, registerAction: registerAction, unregisterAction: unregisterAction,
+    copyText: copyText
+  };
+})();
+
+document.addEventListener('DOMContentLoaded', App.init);
+</script>

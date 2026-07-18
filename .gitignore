@@ -1,0 +1,5 @@
+.clasp.json
+.clasprc.json
+.deploy-state.json
+node_modules/
+npm-debug.log*

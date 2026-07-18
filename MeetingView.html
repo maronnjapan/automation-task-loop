@@ -1,0 +1,25 @@
+<section id="view-meetings" class="view">
+  <div class="page-heading"><div><p class="eyebrow">PHASE 1</p><h2>会議解析</h2></div><button class="secondary" onclick="App.loadMeetings()">一覧更新</button></div>
+  <div class="two-columns wide-left">
+    <article class="panel">
+      <h3>1. 文字起こしを登録・分類</h3>
+      <form id="meeting-form" onsubmit="App.registerMeeting(event)">
+        <label>会議名<input name="title" required maxlength="200"></label>
+        <label>カテゴリー<select name="category" id="meeting-category" required></select></label>
+        <label>会議終了日時<input name="meetingEndedAt" type="datetime-local" required></label>
+        <label>文字起こし<select id="transcript-select"><option value="">フォルダから選択</option></select></label>
+        <label>または Drive ファイルID<input name="transcriptFileId" id="transcript-file-id" placeholder="1Abc..."></label>
+        <button type="submit">登録してカテゴリーへ移動</button>
+      </form>
+    </article>
+    <article class="panel"><h3>登録済み会議</h3><div id="meeting-list" class="item-list empty">まだありません</div></article>
+  </div>
+  <article id="analysis-workspace" class="panel hidden">
+    <div class="page-heading compact"><h3>2. AI 解析</h3><span id="analysis-meeting-label"></span></div>
+    <label>解析プロンプト<textarea id="analysis-prompt" rows="10" readonly></textarea></label>
+    <button onclick="App.copyText('analysis-prompt')">プロンプトをコピー</button>
+    <label>3. AI回答 JSON<textarea id="analysis-json" rows="13" placeholder="JSONだけを貼り付け"></textarea></label>
+    <div class="button-row"><button class="secondary" onclick="App.validateAnalysis()">即時検証</button><button id="save-analysis-button" onclick="App.saveAnalysis()">検証して保存</button></div>
+    <div id="analysis-validation" class="validation-box hidden"></div>
+  </article>
+</section>

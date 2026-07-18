@@ -1,0 +1,19 @@
+{
+  "name": "automation-task-loop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "会議ログ理解・作業ガイド作成/実行システムの Google Apps Script プロジェクト",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "deploy": "node scripts/setup.mjs --reuse-project"
+  },
+  "devDependencies": {
+    "@google/clasp": "3.3.0"
+  },
+  "overrides": {
+    "uuid": "11.1.1"
+  }
+}

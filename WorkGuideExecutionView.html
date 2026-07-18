@@ -1,0 +1,13 @@
+<section id="view-execution" class="view">
+  <div class="page-heading"><div><p class="eyebrow">EXECUTION</p><h2>作業ガイド実行</h2></div><button class="secondary" onclick="App.loadExecutions()">実行一覧</button></div>
+  <div id="execution-list" class="item-list"></div>
+  <article id="execution-workspace" class="panel hidden"><div id="execution-header"></div><div id="execution-step"></div><div class="button-row"><button id="pause-execution-button" class="secondary" onclick="App.pauseExecution()">中断して保存</button><button id="complete-execution-button" class="hidden" onclick="App.completeExecution()">作業を完了</button></div></article>
+</section>
+
+<section id="view-admin" class="view">
+  <div class="page-heading"><div><p class="eyebrow">ADMIN</p><h2>管理・診断</h2></div></div>
+  <div class="two-columns">
+    <article class="panel"><h3>設定診断</h3><button onclick="App.runDiagnostics()">診断を実行</button><div id="diagnostics-result"></div></article>
+    <article class="panel"><h3>登録スクリプト</h3><p class="muted">コードに実装され、本人が明示登録した処理だけが作業ガイドから実行できます。</p><div id="allowed-actions"></div><button class="secondary" onclick="App.loadAllowedActions()">一覧更新</button></article>
+  </div>
+</section>
