@@ -138,7 +138,9 @@ function fingerprint_(value) {
 
 function listWorkGuides() {
   return withClientError_(function () {
-    return { success: true, workGuides: getRows_('WorkGuides').reverse().map(stripRowMetadata_) };
+    const completed = completedMeetingIds_();
+    const guides = getRows_('WorkGuides').filter(function (row) { return !completed[String(row.meetingId)]; });
+    return { success: true, workGuides: guides.reverse().map(stripRowMetadata_) };
   });
 }
 
