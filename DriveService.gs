@@ -43,7 +43,7 @@ function readTextFile_(fileId, maxCharacters) {
   const mimeType = file.getMimeType();
   let text;
   if (mimeType === MimeType.GOOGLE_DOCS) {
-    text = DocumentApp.openById(fileId).getBody().getText();
+    text = readGoogleDocAllTabsText_(fileId);
   } else if (mimeType === MimeType.GOOGLE_SHEETS) {
     text = SpreadsheetApp.openById(fileId).getSheets().map(function (sheet) {
       const values = sheet.getDataRange().getDisplayValues();
@@ -59,8 +59,37 @@ function readTextFile_(fileId, maxCharacters) {
   return text;
 }
 
+function readGoogleDocAllTabsText_(fileId) {
+  const document = DocumentApp.openById(fileId);
+  if (typeof document.getTabs !== 'function') return document.getBody().getText();
+  const tabs = [];
+  (function collect(list) {
+    (list || []).forEach(function (tab) {
+      tabs.push(tab);
+      collect(typeof tab.getChildTabs === 'function' ? tab.getChildTabs() : []);
+    });
+  })(document.getTabs());
+  if (tabs.length <= 1) return document.getBody().getText();
+  return tabs.map(function (tab) {
+    return '## タブ: ' + tab.getTitle() + '\n' + tab.asDocumentTab().getBody().getText();
+  }).join('\n\n');
+}
+
 function createJsonFile_(folder, fileName, data) {
   return folder.createFile(fileName, JSON.stringify(data, null, 2), MimeType.PLAIN_TEXT);
+}
+
+function detectTranscriptCategory_(file) {
+  try {
+    const parents = file.getParents();
+    while (parents.hasNext()) {
+      const name = parents.next().getName();
+      if (APP_CONFIG.categories.indexOf(name) >= 0) return name;
+    }
+  } catch (error) {
+    console.error(error);
+  }
+  return '';
 }
 
 function moveFileToTranscriptCategory_(file, category) {

@@ -6,6 +6,7 @@ const App = (function () {
     bootstrap: null,
     meetings: [],
     transcripts: [],
+    transcriptFiles: [],
     selectedMeetingId: '',
     quiz: null,
     buildSession: null,
@@ -66,7 +67,26 @@ const App = (function () {
       button.addEventListener('click', function () { showView(button.dataset.view); });
     });
     const transcriptSelect = document.getElementById('transcript-select');
-    transcriptSelect.addEventListener('change', function () { document.getElementById('transcript-file-id').value = transcriptSelect.value; });
+    transcriptSelect.addEventListener('change', function () {
+      document.getElementById('transcript-file-id').value = transcriptSelect.value;
+      const file = state.transcriptFiles.find(function (item) { return item.fileId === transcriptSelect.value; });
+      if (file) applyMeetingDefaults(file.name, file.location);
+    });
+    document.getElementById('transcript-file-id').addEventListener('change', async function (event) {
+      const fileId = event.target.value.trim();
+      if (!fileId || fileId === transcriptSelect.value) return;
+      try {
+        const result = await call('getTranscriptFileDefaults', fileId);
+        applyMeetingDefaults(result.defaults.title, result.defaults.category);
+      } catch (error) { showError(error); }
+    });
+  }
+
+  function applyMeetingDefaults(title, category) {
+    const form = document.getElementById('meeting-form');
+    if (title) form.elements.title.value = title;
+    const select = document.getElementById('meeting-category');
+    if (category && Array.from(select.options).some(function (option) { return option.value === category; })) select.value = category;
   }
 
   async function showView(name) {
@@ -152,7 +172,8 @@ const App = (function () {
         await showView('meetings');
         document.getElementById('transcript-select').value = entry.fileId;
         document.getElementById('transcript-file-id').value = entry.fileId;
-        toast('文字起こしを選択しました。会議名と終了日時を入力して登録してください。');
+        applyMeetingDefaults(entry.name, entry.location);
+        toast('文字起こしを選択しました。自動入力された内容を確認して登録してください。');
         document.getElementById('meeting-form').scrollIntoView({ behavior: 'smooth' });
       } else if (entry.stage === 'analysis') {
         await showView('meetings');
@@ -190,9 +211,10 @@ const App = (function () {
   async function loadMeetings() {
     const results = await Promise.all([call('listMeetings'), call('listTranscriptFiles')]);
     state.meetings = results[0].meetings || [];
+    state.transcriptFiles = results[1].files || [];
     const settings = state.bootstrap.settings || {};
     document.getElementById('meeting-category').innerHTML = (settings.categories || []).map(function (category) { return '<option>' + escapeHtml(category) + '</option>'; }).join('');
-    document.getElementById('transcript-select').innerHTML = '<option value="">フォルダから選択</option>' + (results[1].files || []).map(function (file) { return '<option value="' + attr(file.fileId) + '">' + escapeHtml(file.name) + '</option>'; }).join('');
+    document.getElementById('transcript-select').innerHTML = '<option value="">フォルダから選択</option>' + state.transcriptFiles.map(function (file) { return '<option value="' + attr(file.fileId) + '">' + escapeHtml(file.name + (file.location ? ' (' + file.location + ')' : '')) + '</option>'; }).join('');
     document.getElementById('meeting-list').innerHTML = state.meetings.length ? state.meetings.map(function (meeting) {
       return '<div class="list-row"><div><strong>' + escapeHtml(meeting.title) + '</strong><div class="meta">' + escapeHtml(meeting.meetingId + ' / ' + meeting.category + ' / ' + meeting.analysisStatus) + '</div></div><button class="secondary" onclick="App.selectMeeting(\'' + attr(meeting.meetingId) + '\')">解析</button></div>';
     }).join('') : 'まだありません';
@@ -358,6 +380,8 @@ const App = (function () {
       const result = await call('startWorkGuideBuild', actionId);
       state.buildSession = result.session;
       state.editGuide = result.session.data.importedWorkGuide || null;
+      state.saveRequestToken = '';
+      resetBuilderForm();
       renderBuilder();
       showView('builder');
     } catch (error) { showError(error); }
@@ -369,9 +393,28 @@ const App = (function () {
       state.buildSession = result.session;
       state.editGuide = result.session.data.importedWorkGuide;
       state.saveRequestToken = '';
+      resetBuilderForm();
       renderBuilder();
       showView('builder');
     } catch (error) { showError(error); }
+  }
+
+  function resetBuilderForm() {
+    document.getElementById('guide-prompt').value = '';
+    document.getElementById('guide-json-import').value = '';
+    document.getElementById('review-feedback').value = '';
+    document.getElementById('revision-prompt').value = '';
+    document.getElementById('source-query').value = '';
+    document.getElementById('source-results').innerHTML = '';
+    document.getElementById('guide-import-validation').className = 'validation-box hidden';
+    document.getElementById('guide-import-validation').innerHTML = '';
+    document.getElementById('guide-save-result').className = '';
+    document.getElementById('guide-save-result').innerHTML = '';
+    document.getElementById('guide-save-confirm').checked = false;
+    document.getElementById('save-guide-button').disabled = false;
+    document.getElementById('guide-review-panel').classList.add('hidden');
+    document.getElementById('guide-editor-panel').classList.add('hidden');
+    document.getElementById('guide-save-panel').classList.add('hidden');
   }
 
   function renderBuilder() {
@@ -380,7 +423,7 @@ const App = (function () {
     document.getElementById('builder-empty').classList.add('hidden');
     document.getElementById('builder-workspace').classList.remove('hidden');
     document.getElementById('build-session-label').textContent = session.buildSessionId;
-    document.getElementById('builder-stepper').innerHTML = Array.from({ length: 10 }, function (_, index) {
+    document.getElementById('builder-stepper').innerHTML = Array.from({ length: 11 }, function (_, index) {
       const step = index + 1;
       return '<li class="' + (step < session.currentStep ? 'done' : step === session.currentStep ? 'current' : '') + '">STEP ' + step + '</li>';
     }).join('');
@@ -389,7 +432,7 @@ const App = (function () {
     document.getElementById('prerequisite-questions').innerHTML = (session.data.prerequisiteQuestions || []).map(function (question, index) {
       return '<label>' + escapeHtml(question) + '<textarea rows="2" data-prereq-index="' + index + '">' + escapeHtml((session.data.prerequisiteAnswers || {})[question] || '') + '</textarea></label>';
     }).join('');
-    if (state.editGuide) renderGuideEditor();
+    if (state.editGuide) { renderDraftPreview(); renderGuideEditor(); }
   }
 
   async function searchSources() {
@@ -437,10 +480,41 @@ const App = (function () {
       state.buildSession.data.importedWorkGuide = result.workGuide;
       state.buildSession.currentStep = 9;
       box.className = 'validation-box success';
-      box.textContent = '検証OK。下の編集画面で内容を確認してください。';
+      box.textContent = '検証OK。STEP 9 でドラフトを確認し、必要ならレビュー指摘から修正プロンプトを作成してください。';
+      document.getElementById('revision-prompt').value = '';
       renderBuilder();
-      document.getElementById('guide-editor-panel').scrollIntoView({ behavior: 'smooth' });
+      document.getElementById('guide-review-panel').scrollIntoView({ behavior: 'smooth' });
     } catch (error) { renderValidationError(box, error); }
+  }
+
+  function renderDraftPreview() {
+    const guide = state.editGuide;
+    document.getElementById('guide-review-panel').classList.remove('hidden');
+    const listBlock = function (title, items) {
+      return '<h5>' + escapeHtml(title) + '</h5>' + ((items || []).length ? '<ul>' + items.map(function (item) { return '<li>' + escapeHtml(item) + '</li>'; }).join('') + '</ul>' : '<p class="muted">なし</p>');
+    };
+    const stepsHtml = (guide.steps || []).slice().sort(function (a, b) { return a.order - b.order; }).map(function (step) {
+      const inputs = (step.inputs || []).map(function (input) { return '<li>' + escapeHtml(input.label + (input.required ? '（必須）' : '')) + '</li>'; }).join('');
+      return '<div class="question"><h5>' + step.order + '. ' + escapeHtml(step.title) + '</h5><p>' + escapeHtml(step.description) + '</p>' +
+        (step.url ? '<p class="meta">URL: ' + escapeHtml(step.url) + '</p>' : '') +
+        (step.type === 'script' ? '<p class="meta">登録スクリプト: ' + escapeHtml(step.scriptId || '') + '</p>' : '') +
+        (inputs ? '<p class="meta">入力・確認項目:</p><ul>' + inputs + '</ul>' : '') +
+        '<p class="meta"><strong>完了条件:</strong> ' + escapeHtml(step.completionCriteria || '') + '</p></div>';
+    }).join('');
+    document.getElementById('guide-draft-preview').innerHTML =
+      '<h4>' + escapeHtml(guide.title || '') + '</h4><p>' + escapeHtml(guide.goal || '') + '</p>' +
+      listBlock('背景・既知事項', guide.assumptions) + listBlock('前提条件・必要な権限', guide.prerequisites) + listBlock('注意事項', guide.warnings) +
+      '<h5>手順（' + (guide.steps || []).length + '件）</h5>' + stepsHtml;
+  }
+
+  async function prepareRevisionPrompt() {
+    try {
+      const feedback = document.getElementById('review-feedback').value.trim();
+      if (!feedback) throw new Error('修正してほしい点をレビュー指摘へ入力してください。');
+      const result = await call('prepareWorkGuideRevisionPrompt', state.buildSession.buildSessionId, feedback);
+      document.getElementById('revision-prompt').value = result.prompt;
+      toast('修正プロンプトを作成しました。コピーして生成AIへ渡し、修正版JSONを STEP 8 へ貼り直してください。');
+    } catch (error) { showError(error); }
   }
 
   function renderGuideEditor() {
@@ -508,7 +582,7 @@ const App = (function () {
   async function saveBuildDraft() {
     if (!syncGuideEditor()) return;
     try {
-      await call('saveWorkGuideBuildProgress', state.buildSession.buildSessionId, 9, { importedWorkGuide: state.editGuide });
+      await call('saveWorkGuideBuildProgress', state.buildSession.buildSessionId, 10, { importedWorkGuide: state.editGuide });
       toast('編集内容を一時保存しました。');
     } catch (error) { showError(error); }
   }
@@ -533,7 +607,7 @@ const App = (function () {
       if (!result.success) throw clientError(result);
       output.className = 'validation-box success';
       output.innerHTML = '<strong>保存完了</strong><p>' + escapeHtml(result.workGuideId + ' v' + result.version) + '</p><p><a target="_blank" href="' + attr(result.documentUrl) + '">Googleドキュメント</a> / <a target="_blank" href="' + attr(result.jsonUrl) + '">JSON</a></p><p>会議終了から ' + result.minutesFromMeetingEnd + '分（15分目標: ' + (result.within15Minutes ? '達成' : '超過') + '）</p>';
-      state.buildSession.currentStep = 10;
+      state.buildSession.currentStep = 11;
       toast('作業ガイドを2形式で保存しました。');
     } catch (error) {
       button.disabled = false;
@@ -690,6 +764,17 @@ const App = (function () {
     } catch (error) { showError(new Error('コピーできませんでした。テキストを選択して手動でコピーしてください。')); }
   }
 
+  async function copyPromptToChatGpt(id) {
+    const field = document.getElementById(id);
+    if (!field.value.trim()) return showError(new Error('先にプロンプトを作成してください。'));
+    const chatWindow = window.open('https://chatgpt.com/', '_blank');
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(field.value);
+      else { field.select(); document.execCommand('copy'); }
+      toast(chatWindow ? 'プロンプトをコピーしました。ChatGPT のタブへ貼り付けてください。' : 'プロンプトをコピーしました。ポップアップがブロックされたため、chatgpt.com を手動で開いてください。');
+    } catch (error) { showError(new Error('コピーできませんでした。テキストを選択して手動でコピーしてください。')); }
+  }
+
   function renderValidationError(box, error) {
     box.className = 'validation-box error';
     const errors = error.details && error.details.errors ? error.details.errors : [];
@@ -710,12 +795,12 @@ const App = (function () {
     selectMeeting: selectMeeting, validateAnalysis: validateAnalysis, saveAnalysis: saveAnalysis, openQuiz: openQuiz,
     answerSingle: answerSingle, continueSingle: continueSingle, submitBatchQuiz: submitBatchQuiz, submitCurrentQuiz: submitCurrentQuiz,
     loadActions: loadActions, startBuild: startBuild, reviseGuide: reviseGuide, searchSources: searchSources, prepareGuidePrompt: prepareGuidePrompt,
-    importGuide: importGuide, addGuideStep: addGuideStep, deleteGuideStep: deleteGuideStep, moveGuideStep: moveGuideStep,
+    importGuide: importGuide, prepareRevisionPrompt: prepareRevisionPrompt, addGuideStep: addGuideStep, deleteGuideStep: deleteGuideStep, moveGuideStep: moveGuideStep,
     duplicateGuideStep: duplicateGuideStep, saveBuildDraft: saveBuildDraft, saveGuide: saveGuide, loadGuides: loadGuides,
     preflightGuide: preflightGuide, startExecution: startExecution, loadExecutions: loadExecutions, openExecution: openExecution,
     saveCurrentStep: saveCurrentStep, pauseExecution: pauseExecution, resumeExecution: resumeExecution, completeExecution: completeExecution,
     runDiagnostics: runDiagnostics, loadAllowedActions: loadAllowedActions, registerAction: registerAction, unregisterAction: unregisterAction,
-    copyText: copyText
+    copyText: copyText, copyPromptToChatGpt: copyPromptToChatGpt
   };
 })();
 

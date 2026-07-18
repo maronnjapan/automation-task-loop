@@ -1,7 +1,7 @@
 function parsePastedJson_(rawText) {
   assertApp_(typeof rawText === 'string' && rawText.trim(), 'EMPTY_JSON', 'AI の JSON を貼り付けてください。');
   let text = rawText.trim();
-  const fenced = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  const fenced = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i) || text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
   if (fenced) text = fenced[1];
   try {
     return JSON.parse(text);
@@ -81,7 +81,7 @@ function validateWorkGuide_(guide, options) {
   const errors = [];
   if (!isPlainObject_(guide)) errors.push('ルートは JSON オブジェクトである必要があります。');
   if (String(guide && guide.schemaVersion) !== APP_CONFIG.schemaVersion) errors.push('schemaVersion は ' + APP_CONFIG.schemaVersion + ' です。');
-  if (guide && guide.workGuideId && !/^WG-\d{8}-\d{4,}$/.test(String(guide.workGuideId))) errors.push('workGuideId の形式が不正です。');
+  if (guide && guide.workGuideId && !/^WG-[A-Za-z0-9][A-Za-z0-9-]*$/.test(String(guide.workGuideId))) errors.push('workGuideId の形式が不正です。');
   if (options.expectedWorkGuideId && String(guide.workGuideId) !== String(options.expectedWorkGuideId)) errors.push('編集中の workGuideId と JSON の workGuideId が一致しません。');
   if (guide && guide.version !== undefined && (!Number.isInteger(Number(guide.version)) || Number(guide.version) < 1)) errors.push('version は1以上の整数です。');
   ['title', 'goal'].forEach(function (field) { if (!nonEmptyString_(guide && guide[field])) errors.push(field + ' は必須です。'); });
