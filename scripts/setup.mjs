@@ -69,9 +69,8 @@ if (!noOpen) openBrowser(setupUrl);
 
 async function ensureLogin() {
   const status = spawnSync(claspBin, ['show-authorized-user', '--json'], { cwd: projectRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-  if (status.status === 0) return;
-  process.stdout.write('Google アカウントへの clasp ログインを開始します。\n');
-  runClasp(['login'], { capture: false });
+  if (isLoggedIn(status)) return;
+  await guideClaspLogin();
 }
 
 async function ensureProject() {
@@ -83,23 +82,69 @@ async function ensureProject() {
   }
 
   const temporaryProjectDir = mkdtempSync(join(tmpdir(), 'automation-task-loop-clasp-'));
+  let retriedAfterLogin = false;
+  let retriedAfterApiEnable = false;
   try {
-    createProjectInTemporaryDirectory(temporaryProjectDir);
-  } catch (error) {
-    if (/script api|apps script api|user settings/i.test(String(error.message))) {
-      const settingsUrl = 'https://script.google.com/home/usersettings';
-      process.stdout.write('\nApps Script API を有効にしてください: ' + settingsUrl + '\n');
-      if (noOpen) throw new Error('Apps Script API を有効にしてから、同じコマンドを再実行してください。');
-      if (!noOpen) openBrowser(settingsUrl);
-      const prompt = readline.createInterface({ input: process.stdin, output: process.stdout });
-      await prompt.question('有効化したら Enter を押してください。');
-      prompt.close();
-      createProjectInTemporaryDirectory(temporaryProjectDir);
-    } else {
-      throw error;
+    while (true) {
+      try {
+        createProjectInTemporaryDirectory(temporaryProjectDir);
+        break;
+      } catch (error) {
+        if (!retriedAfterLogin && /no credentials found|not logged in/i.test(String(error.message))) {
+          retriedAfterLogin = true;
+          await guideClaspLogin();
+          continue;
+        }
+        if (!retriedAfterApiEnable && /script api|apps script api|user settings/i.test(String(error.message))) {
+          retriedAfterApiEnable = true;
+          const settingsUrl = 'https://script.google.com/home/usersettings';
+          process.stdout.write('\nApps Script API を有効にしてください: ' + settingsUrl + '\n');
+          if (noOpen) throw new Error('Apps Script API を有効にしてから、同じコマンドを再実行してください。');
+          openBrowser(settingsUrl);
+          const prompt = readline.createInterface({ input: process.stdin, output: process.stdout });
+          await prompt.question('有効化したら Enter を押してください。');
+          prompt.close();
+          continue;
+        }
+        throw error;
+      }
     }
   } finally {
     rmSync(temporaryProjectDir, { recursive: true, force: true });
+  }
+}
+
+async function guideClaspLogin() {
+  process.stdout.write([
+    '',
+    'clasp の認証情報（credential）が見つかりません。Google 認証を開始します。',
+    '1. clasp が表示する URL をブラウザで開きます。',
+    '2. この Apps Script を所有する Google アカウントでログインします。',
+    '3. clasp から求められるアクセス権を確認し、許可します。',
+    noOpen
+      ? '4. 認証後、ブラウザのアドレスバーに表示された URL 全体をコピーし、ターミナルへ貼り付けます。'
+      : '4. 認証完了後、このターミナルへ自動的に戻るまで待ちます。',
+    '認証情報は clasp のユーザー設定に保存され、このリポジトリには保存されません。',
+    ''
+  ].join('\n'));
+
+  const loginArgs = ['login'];
+  if (noOpen) loginArgs.push('--no-localhost');
+  runClasp(loginArgs, { capture: false });
+
+  const status = spawnSync(claspBin, ['show-authorized-user', '--json'], { cwd: projectRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  if (!isLoggedIn(status)) {
+    throw new Error('clasp の認証情報を確認できませんでした。認証を完了してから、同じコマンドを再実行してください。');
+  }
+  process.stdout.write('clasp の Google 認証を確認しました。セットアップを続行します。\n');
+}
+
+function isLoggedIn(status) {
+  if (status.error || status.status !== 0) return false;
+  try {
+    return JSON.parse(String(status.stdout || '')).loggedIn === true;
+  } catch (error) {
+    return false;
   }
 }
 

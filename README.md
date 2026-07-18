@@ -15,7 +15,7 @@ npm run setup
 
 初回は次の処理が順番に行われます。
 
-1. 未ログインなら `clasp login` を起動する（Google の画面で本人がログイン）。
+1. 未ログインなら認証手順を端末に表示して `clasp login` を起動する（Google の画面で本人がログイン）。認証完了後はログイン状態を再確認してから続行する。
 2. Apps Script API が無効なら設定ページを開き、ユーザーの有効化を待つ。
 3. 本人所有の Web アプリ用 Apps Script プロジェクトを作成する。
 4. リポジトリの `.gs` / `.html` / `appsscript.json` を push する。
@@ -36,7 +36,7 @@ npm run setup -- --script-id YOUR_SCRIPT_ID
 npm run deploy
 ```
 
-CI やヘッドレス環境では `--no-open` を指定できます。`.clasp.json` と `.deploy-state.json` はローカル環境情報として Git 管理から除外されます。`~/.clasprc.json` は OAuth 更新トークンを含むため、共有・commitしないでください。
+CI やヘッドレス環境では `--no-open` を指定できます。未認証の場合は端末に認証URLが表示されるので、ブラウザで認証後、アドレスバーのURL全体を端末へ貼り付けてください。`.clasp.json` と `.deploy-state.json` はローカル環境情報として Git 管理から除外されます。`~/.clasprc.json` は OAuth 更新トークンを含むため、共有・commitしないでください。
 
 ## 手動セットアップ（代替）
 
