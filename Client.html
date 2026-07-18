@@ -5,6 +5,7 @@ const App = (function () {
   const state = {
     bootstrap: null,
     meetings: [],
+    transcripts: [],
     selectedMeetingId: '',
     quiz: null,
     buildSession: null,
@@ -53,7 +54,7 @@ const App = (function () {
       document.getElementById('global-status').textContent = state.bootstrap.configured ? '設定済み' : '要セットアップ';
       document.getElementById('setup-warning').classList.toggle('hidden', state.bootstrap.configured);
       renderDashboard();
-      if (state.bootstrap.configured) await loadMeetings();
+      if (state.bootstrap.configured) { await loadMeetings(); await loadTranscriptWorkflows(); }
     } catch (error) {
       showError(error);
       document.getElementById('global-status').textContent = 'エラー';
@@ -88,6 +89,7 @@ const App = (function () {
   async function refreshDashboard() {
     state.bootstrap = await call('getBootstrapData');
     renderDashboard();
+    if (state.bootstrap.configured) await loadTranscriptWorkflows();
   }
 
   async function runInitialSetup() {
@@ -100,6 +102,7 @@ const App = (function () {
       document.getElementById('global-status').textContent = '設定済み';
       renderDashboard();
       await loadMeetings();
+      await loadTranscriptWorkflows();
     } catch (error) { showError(error); }
   }
 
@@ -109,6 +112,79 @@ const App = (function () {
     document.getElementById('dashboard-counts').innerHTML = labels.map(function (item) {
       return '<div class="metric"><span>' + item[1] + '</span><strong>' + escapeHtml(counts[item[0]]) + '</strong></div>';
     }).join('');
+  }
+
+  async function loadTranscriptWorkflows() {
+    if (!state.bootstrap || !state.bootstrap.configured) return;
+    const result = await call('listTranscriptWorkflows');
+    state.transcripts = result.transcripts || [];
+    renderTranscriptWorkflows();
+  }
+
+  function renderTranscriptWorkflows() {
+    const active = state.transcripts.filter(function (entry) { return entry.stage !== 'completed'; });
+    const done = state.transcripts.filter(function (entry) { return entry.stage === 'completed'; });
+    document.getElementById('transcript-workflow-list').innerHTML = active.length ? active.map(function (entry) {
+      const meta = [entry.stageLabel]
+        .concat(entry.meetingTitle ? ['会議: ' + entry.meetingTitle] : [])
+        .concat(entry.location ? ['フォルダ: ' + entry.location] : [])
+        .concat(entry.stage === 'guide' ? ['未選択の候補 ' + entry.candidateActionCount + '件 / ガイド ' + entry.guideCount + '件'] : []);
+      return '<div class="list-row"><div><strong><a target="_blank" href="' + attr(entry.url) + '">' + escapeHtml(entry.name) + '</a></strong><div class="meta">' + escapeHtml(meta.join(' / ')) + '</div></div><div class="button-row"><button onclick="App.selectTranscript(\'' + attr(entry.fileId) + '\')">' + escapeHtml(transcriptNextLabel(entry)) + '</button><button class="secondary" onclick="App.completeTranscript(\'' + attr(entry.fileId) + '\')">完了にする</button></div></div>';
+    }).join('') : '未完了の文字起こしはありません。';
+    document.getElementById('transcript-done-wrap').classList.toggle('hidden', !done.length);
+    document.getElementById('transcript-done-list').innerHTML = done.map(function (entry) {
+      return '<div class="list-row"><div><strong><a target="_blank" href="' + attr(entry.url) + '">' + escapeHtml(entry.name) + '</a></strong><div class="meta">' + escapeHtml('完了' + (entry.completedAt ? ' / ' + entry.completedAt : '') + (entry.meetingTitle ? ' / 会議: ' + entry.meetingTitle : '')) + '</div></div><button class="secondary" onclick="App.reopenTranscript(\'' + attr(entry.fileId) + '\')">未完了に戻す</button></div>';
+    }).join('');
+  }
+
+  function transcriptNextLabel(entry) {
+    if (entry.stage === 'register') return '会議として登録';
+    if (entry.stage === 'analysis') return '解析へ進む';
+    if (entry.stage === 'quiz') return 'クイズへ進む';
+    return '作業候補を見る';
+  }
+
+  async function selectTranscript(fileId) {
+    const entry = state.transcripts.find(function (item) { return item.fileId === fileId; });
+    if (!entry) return;
+    try {
+      if (entry.stage === 'register') {
+        await showView('meetings');
+        document.getElementById('transcript-select').value = entry.fileId;
+        document.getElementById('transcript-file-id').value = entry.fileId;
+        toast('文字起こしを選択しました。会議名と終了日時を入力して登録してください。');
+        document.getElementById('meeting-form').scrollIntoView({ behavior: 'smooth' });
+      } else if (entry.stage === 'analysis') {
+        await showView('meetings');
+        await selectMeeting(entry.meetingId);
+      } else if (entry.stage === 'quiz') {
+        await showView('quiz');
+        document.getElementById('quiz-meeting-select').value = entry.meetingId;
+        toast('回答方式を選んでクイズを開始してください。');
+      } else {
+        await showView('actions');
+      }
+    } catch (error) { showError(error); }
+  }
+
+  async function completeTranscript(fileId) {
+    const entry = state.transcripts.find(function (item) { return item.fileId === fileId; });
+    const warning = entry && entry.stage !== 'guide' ? '\n※ まだ「' + entry.stageLabel + '」の段階です。' : '';
+    if (!window.confirm('この文字起こしを完了扱いにして「完了」フォルダへ移動しますか？' + warning)) return;
+    try {
+      await call('completeTranscript', fileId);
+      toast('完了フォルダへ移動しました。');
+      await loadTranscriptWorkflows();
+    } catch (error) { showError(error); }
+  }
+
+  async function reopenTranscript(fileId) {
+    if (!window.confirm('この文字起こしを未完了に戻し、元のカテゴリーフォルダへ移動しますか？')) return;
+    try {
+      await call('reopenTranscript', fileId);
+      toast('未完了に戻しました。');
+      await loadTranscriptWorkflows();
+    } catch (error) { showError(error); }
   }
 
   async function loadMeetings() {
@@ -630,6 +706,7 @@ const App = (function () {
 
   return {
     init: init, showView: showView, refreshDashboard: refreshDashboard, runInitialSetup: runInitialSetup, loadMeetings: loadMeetings, registerMeeting: registerMeeting,
+    loadTranscriptWorkflows: loadTranscriptWorkflows, selectTranscript: selectTranscript, completeTranscript: completeTranscript, reopenTranscript: reopenTranscript,
     selectMeeting: selectMeeting, validateAnalysis: validateAnalysis, saveAnalysis: saveAnalysis, openQuiz: openQuiz,
     answerSingle: answerSingle, continueSingle: continueSingle, submitBatchQuiz: submitBatchQuiz, submitCurrentQuiz: submitCurrentQuiz,
     loadActions: loadActions, startBuild: startBuild, reviseGuide: reviseGuide, searchSources: searchSources, prepareGuidePrompt: prepareGuidePrompt,

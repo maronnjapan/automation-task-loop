@@ -14,7 +14,7 @@ function registerMeeting(input) {
     const meeting = {
       meetingId: createId_('MTG'), title: input.title.trim(), category: input.category,
       transcriptFileId: file.getId(), meetingEndedAt: new Date(input.meetingEndedAt).toISOString(),
-      registeredAt: nowIso_(), analysisStatus: 'pending'
+      registeredAt: nowIso_(), analysisStatus: 'pending', workflowStatus: 'active', completedAt: ''
     };
     appendObject_('Meetings', meeting);
     return { success: true, meeting: meeting };

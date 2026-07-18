@@ -14,6 +14,7 @@ const APP_CONFIG = Object.freeze({
   }),
   folderPaths: Object.freeze({
     transcripts: ['01_文字起こし'],
+    transcriptsDone: ['01_文字起こし', '完了'],
     analysisSummaries: ['02_会議解析', '要約'],
     analysisJson: ['02_会議解析', 'AI回答JSON'],
     guideDrafts: ['03_作業ガイド', '作成途中'],
@@ -39,7 +40,7 @@ const APP_CONFIG = Object.freeze({
 });
 
 const SHEET_DEFINITIONS = Object.freeze({
-  Meetings: ['meetingId', 'title', 'category', 'transcriptFileId', 'meetingEndedAt', 'registeredAt', 'analysisStatus'],
+  Meetings: ['meetingId', 'title', 'category', 'transcriptFileId', 'meetingEndedAt', 'registeredAt', 'analysisStatus', 'workflowStatus', 'completedAt'],
   MeetingAnalyses: ['meetingId', 'summaryFileId', 'analysisJsonFileId', 'summary', 'decisionsJson', 'pendingItemsJson', 'quizJson', 'analyzedAt'],
   Actions: ['actionId', 'meetingId', 'title', 'description', 'owner', 'dueDate', 'status', 'prerequisiteQuestionsJson', 'createdAt'],
   QuizSessions: ['quizSessionId', 'meetingId', 'mode', 'status', 'answersJson', 'questionStatesJson', 'scoreJson', 'updatedAt'],
