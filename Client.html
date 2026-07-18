@@ -101,7 +101,6 @@ const App = (function () {
       if (name === 'quiz') await populateQuizMeetings();
       if (name === 'actions') await loadActions();
       if (name === 'guides') await loadGuides();
-      if (name === 'execution') await loadExecutions();
       if (name === 'admin') { await runDiagnostics(); await loadAllowedActions(); }
     } catch (error) { showError(error); }
   }
@@ -278,7 +277,7 @@ const App = (function () {
       const result = await call('listMeetings');
       state.meetings = result.meetings || [];
     }
-    const analyzed = state.meetings.filter(function (meeting) { return meeting.analysisStatus === 'completed'; });
+    const analyzed = state.meetings.filter(function (meeting) { return meeting.analysisStatus === 'completed' && meeting.workflowStatus !== 'completed'; });
     document.getElementById('quiz-meeting-select').innerHTML = analyzed.length ? analyzed.map(function (meeting) { return '<option value="' + attr(meeting.meetingId) + '">' + escapeHtml(meeting.title) + '</option>'; }).join('') : '<option value="">解析済み会議なし</option>';
   }
 
@@ -622,6 +621,7 @@ const App = (function () {
     document.getElementById('guide-list').innerHTML = result.workGuides.length ? result.workGuides.map(function (guide) {
       return '<article class="item-card"><h3>' + escapeHtml(guide.title) + '</h3><p class="meta">' + escapeHtml(guide.workGuideId + ' / v' + guide.currentVersion) + '</p><p><a target="_blank" href="https://drive.google.com/open?id=' + attr(guide.documentFileId) + '">ドキュメント</a> / <a target="_blank" href="https://drive.google.com/open?id=' + attr(guide.jsonFileId) + '">JSON</a></p><div class="button-row"><button onclick="App.preflightGuide(\'' + attr(guide.workGuideId) + '\',' + Number(guide.currentVersion) + ')">実行前確認</button><button class="secondary" onclick="App.reviseGuide(\'' + attr(guide.workGuideId) + '\')">新バージョン編集</button></div></article>';
     }).join('') : '作業ガイドはまだありません';
+    await loadExecutions();
   }
 
   async function preflightGuide(workGuideId, versionNo) {
@@ -645,7 +645,7 @@ const App = (function () {
       state.execution = result.execution;
       state.executionGuide = result.workGuide;
       renderExecution();
-      showView('execution');
+      document.getElementById('execution-workspace').scrollIntoView({ behavior: 'smooth' });
     } catch (error) { showError(error); }
   }
 
@@ -662,6 +662,7 @@ const App = (function () {
       state.execution = result.execution;
       state.executionGuide = result.workGuide;
       renderExecution();
+      document.getElementById('execution-workspace').scrollIntoView({ behavior: 'smooth' });
     } catch (error) { showError(error); }
   }
 

@@ -1,6 +1,7 @@
 function listActionCandidates(meetingId) {
   return withClientError_(function () {
-    const rows = findRows_('Actions', function (row) { return !meetingId || String(row.meetingId) === String(meetingId); });
+    const completed = completedMeetingIds_();
+    const rows = findRows_('Actions', function (row) { return (!meetingId || String(row.meetingId) === String(meetingId)) && !completed[String(row.meetingId)]; });
     return { success: true, actions: rows.reverse().map(function (row) {
       const action = stripRowMetadata_(row);
       action.prerequisiteQuestions = parseJsonCell_(action.prerequisiteQuestionsJson, []);

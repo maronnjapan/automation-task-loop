@@ -7,12 +7,17 @@ function getBootstrapData() {
       success: true,
       configured: true,
       settings: settings,
-      counts: {
-        meetings: getRows_('Meetings').length,
-        actions: getRows_('Actions').filter(function (row) { return row.status === 'candidate'; }).length,
-        guides: getRows_('WorkGuides').length,
-        activeExecutions: getRows_('WorkGuideExecutions').filter(function (row) { return row.status === 'in_progress' || row.status === 'paused'; }).length
-      }
+      counts: (function () {
+        const completed = completedMeetingIds_();
+        const guideMeeting = {};
+        getRows_('WorkGuides').forEach(function (row) { guideMeeting[String(row.workGuideId)] = String(row.meetingId); });
+        return {
+          meetings: getRows_('Meetings').length,
+          actions: getRows_('Actions').filter(function (row) { return row.status === 'candidate' && !completed[String(row.meetingId)]; }).length,
+          guides: getRows_('WorkGuides').filter(function (row) { return !completed[String(row.meetingId)]; }).length,
+          activeExecutions: getRows_('WorkGuideExecutions').filter(function (row) { return (row.status === 'in_progress' || row.status === 'paused') && !completed[guideMeeting[String(row.workGuideId)]]; }).length
+        };
+      })()
     };
   });
 }

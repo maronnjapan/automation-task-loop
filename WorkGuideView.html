@@ -2,4 +2,7 @@
   <div class="page-heading"><div><p class="eyebrow">PHASE 5</p><h2>保存済み作業ガイド</h2></div><button class="secondary" onclick="App.loadGuides()">一覧更新</button></div>
   <div id="guide-list" class="card-grid empty">作業ガイドはまだありません</div>
   <article id="preflight-panel" class="panel hidden"><h3>実行前確認</h3><div id="preflight-result"></div><label id="preflight-confirm-line" class="check-line hidden"><input id="preflight-confirm" type="checkbox"> 注意事項を確認し、続行します</label><button id="start-execution-button" onclick="App.startExecution()">実行を開始</button></article>
+  <article id="execution-workspace" class="panel hidden"><div class="page-heading"><div><p class="eyebrow">EXECUTION</p><h2>作業ガイド実行</h2></div></div><div id="execution-header"></div><div id="execution-step"></div><div class="button-row"><button id="pause-execution-button" class="secondary" onclick="App.pauseExecution()">中断して保存</button><button id="complete-execution-button" class="hidden" onclick="App.completeExecution()">作業を完了</button></div></article>
+  <div class="page-heading"><div><p class="eyebrow">EXECUTION</p><h2>進行中・中断中の作業</h2></div><button class="secondary" onclick="App.loadExecutions()">一覧更新</button></div>
+  <div id="execution-list" class="item-list"></div>
 </section>

@@ -84,6 +84,19 @@ function requireMeeting_(meetingId) {
   return meeting;
 }
 
+/**
+ * Returns a lookup of meetingId -> true for meetings whose transcript has been
+ * marked completed. Used to drop related quizzes, work guides, action candidates
+ * and executions from their lists once the source transcript is done.
+ */
+function completedMeetingIds_() {
+  const completed = {};
+  getRows_('Meetings').forEach(function (row) {
+    if (String(row.workflowStatus) === 'completed') completed[String(row.meetingId)] = true;
+  });
+  return completed;
+}
+
 function stripRowMetadata_(row) {
   if (!row) return row;
   const copy = Object.assign({}, row);

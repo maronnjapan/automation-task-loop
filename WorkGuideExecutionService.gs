@@ -120,7 +120,14 @@ function completeWorkGuideExecution(executionId, notes) {
 
 function listWorkGuideExecutions(workGuideId) {
   return withClientError_(function () {
-    return { success: true, executions: findRows_('WorkGuideExecutions', function (row) { return !workGuideId || String(row.workGuideId) === String(workGuideId); }).reverse().map(hydrateExecution_) };
+    const completed = completedMeetingIds_();
+    const guideMeeting = {};
+    getRows_('WorkGuides').forEach(function (row) { guideMeeting[String(row.workGuideId)] = String(row.meetingId); });
+    const rows = findRows_('WorkGuideExecutions', function (row) {
+      if (workGuideId && String(row.workGuideId) !== String(workGuideId)) return false;
+      return !completed[guideMeeting[String(row.workGuideId)]];
+    });
+    return { success: true, executions: rows.reverse().map(hydrateExecution_) };
   });
 }
 
