@@ -9,6 +9,15 @@
     <button onclick="App.runInitialSetup()">初期設定を実行</button>
   </div>
   <div id="dashboard-counts" class="metric-grid"></div>
+  <article class="panel">
+    <div class="page-heading compact"><h3>文字起こしドキュメント</h3><button class="secondary" onclick="App.loadTranscriptWorkflows()">一覧更新</button></div>
+    <p class="meta">01_文字起こし フォルダ内の Google ドキュメントです。選択すると次の工程（登録 → 解析 → クイズ → ガイド作成）へ移動します。クイズ回答やガイド作成が終わったら「完了にする」で「完了」フォルダへ移動します。</p>
+    <div id="transcript-workflow-list" class="item-list empty">読込中...</div>
+    <details id="transcript-done-wrap" class="hidden">
+      <summary>完了済みの文字起こし</summary>
+      <div id="transcript-done-list" class="item-list"></div>
+    </details>
+  </article>
   <div class="two-columns">
     <article class="panel"><h3>最短フロー</h3><ol class="flow-list"><li>文字起こしを登録・分類</li><li>解析プロンプトをコピーして AI 回答を保存</li><li>クイズで理解を確認</li><li>必要な作業候補だけガイド化</li><li>後日、保存済みガイドを実行</li></ol></article>
     <article class="panel"><h3>15分目標</h3><p>会議終了からガイド保存までの時間を保存結果で表示します。AIとの基本往復は「会議解析」「ガイド生成」の2回です。</p><button onclick="App.showView('meetings')">会議を登録</button></article>
