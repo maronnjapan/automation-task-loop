@@ -93,6 +93,21 @@
   .check-result.ok { border-color: #12b76a; }
   .check-result.warning { border-color: #f79009; }
   .check-result.unavailable { border-color: #f04438; }
+  .guide-screen { animation: appear .2s ease; }
+  .exec-progress { margin: 0 0 1rem; }
+  .exec-progress .stepper { padding-bottom: 0; }
+  .exec-step-lead { margin: 0 0 .6rem; }
+  .exec-step-count { display: inline-block; margin-bottom: .3rem; padding: .2rem .65rem; border-radius: 999px; background: var(--primary-soft); color: var(--primary-dark); font-size: .75rem; font-weight: 800; letter-spacing: .04em; }
+  .exec-step-lead h4 { margin: .25rem 0 0; font-size: 1.15rem; }
+  .action-step { margin: .85rem 0; padding: .9rem 1rem; border: 1px solid var(--line); border-left: 4px solid var(--primary); border-radius: 12px; background: #f9fbfc; }
+  .action-step .action-title { display: flex; align-items: center; gap: .55rem; margin-bottom: .65rem; font-weight: 700; }
+  .action-index { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 1.55rem; height: 1.55rem; border-radius: 999px; background: var(--primary); color: #fff; font-size: .82rem; font-weight: 800; }
+  .action-step label { margin-bottom: 0; }
+  .action-step label + label { margin-top: .75rem; }
+  .action-open { display: inline-flex; align-items: center; gap: .4rem; padding: .68rem 1.15rem; border-radius: 10px; background: var(--primary); color: #fff; font-weight: 700; text-decoration: none; }
+  .action-open:hover { background: var(--primary-dark); }
+  .action-url { margin-top: .5rem; font-size: .78rem; color: var(--muted); word-break: break-all; }
+  .completion-note { margin: .9rem 0 0; padding: .75rem .9rem; border-radius: 10px; background: var(--primary-soft); color: var(--primary-dark); }
   #toast { position: fixed; z-index: 100; right: 1rem; bottom: 1rem; max-width: min(420px, calc(100vw - 2rem)); padding: .8rem 1rem; border-radius: 10px; color: #fff; background: #101828; box-shadow: var(--shadow); opacity: 0; pointer-events: none; transform: translateY(10px); transition: .2s; }
   #toast.show { opacity: 1; transform: translateY(0); }
   #toast.error { background: var(--danger); }

@@ -1,8 +1,40 @@
 <section id="view-guides" class="view">
-  <div class="page-heading"><div><p class="eyebrow">PHASE 5</p><h2>保存済み作業ガイド</h2></div><button class="secondary" onclick="App.loadGuides()">一覧更新</button></div>
-  <div id="guide-list" class="card-grid empty">作業ガイドはまだありません</div>
-  <article id="preflight-panel" class="panel hidden"><h3>実行前確認</h3><div id="preflight-result"></div><label id="preflight-confirm-line" class="check-line hidden"><input id="preflight-confirm" type="checkbox"> 注意事項を確認し、続行します</label><button id="start-execution-button" onclick="App.startExecution()">実行を開始</button></article>
-  <article id="execution-workspace" class="panel hidden"><div class="page-heading"><div><p class="eyebrow">EXECUTION</p><h2>作業ガイド実行</h2></div></div><div id="execution-header"></div><div id="execution-step"></div><div class="button-row"><button id="pause-execution-button" class="secondary" onclick="App.pauseExecution()">中断して保存</button><button id="complete-execution-button" class="hidden" onclick="App.completeExecution()">作業を完了</button></div></article>
-  <div class="page-heading"><div><p class="eyebrow">EXECUTION</p><h2>進行中・中断中の作業</h2></div><button class="secondary" onclick="App.loadExecutions()">一覧更新</button></div>
-  <div id="execution-list" class="item-list"></div>
+  <!-- 画面1: 作業一覧 -->
+  <div id="guides-screen-list" class="guide-screen">
+    <div class="page-heading"><div><p class="eyebrow">PHASE 5</p><h2>作業一覧</h2></div><button class="secondary" onclick="App.loadGuides()">一覧更新</button></div>
+    <div class="notice info">作業ガイドを選ぶと詳細画面が開きます。実行前確認のあと、手順を1つずつステップごとに実行できます。</div>
+    <div id="active-work-wrap" class="hidden">
+      <div class="page-heading compact"><h3>進行中・中断中の作業</h3></div>
+      <div id="execution-list" class="item-list"></div>
+    </div>
+    <div class="page-heading compact"><h3>保存済み作業ガイド</h3></div>
+    <div id="guide-list" class="card-grid empty">作業ガイドはまだありません</div>
+  </div>
+
+  <!-- 画面2: 作業詳細 -->
+  <div id="guides-screen-detail" class="guide-screen hidden">
+    <div class="page-heading"><div><p class="eyebrow">GUIDE DETAIL</p><h2 id="guide-detail-title">作業詳細</h2></div><button class="secondary" onclick="App.backToGuideList()">← 作業一覧へ戻る</button></div>
+    <article class="panel" id="guide-detail-panel"></article>
+    <article id="preflight-panel" class="panel hidden">
+      <h3>実行前確認</h3>
+      <div id="preflight-result"></div>
+      <label id="preflight-confirm-line" class="check-line hidden"><input id="preflight-confirm" type="checkbox"> 注意事項を確認し、続行します</label>
+      <button id="start-execution-button" onclick="App.startExecution()">この作業を実行する</button>
+    </article>
+    <article class="panel">
+      <div class="page-heading compact"><h3>この作業ガイドの実行履歴</h3></div>
+      <div id="guide-detail-execution-list" class="item-list"><p class="empty">読込中...</p></div>
+    </article>
+  </div>
+
+  <!-- 画面3: 作業実行（ステップバイステップ） -->
+  <div id="guides-screen-execution" class="guide-screen hidden">
+    <div class="page-heading"><div><p class="eyebrow">EXECUTION</p><h2>作業実行</h2></div><button class="secondary" onclick="App.backToGuideList()">← 作業一覧へ戻る</button></div>
+    <div id="execution-header"></div>
+    <div id="execution-progress" class="exec-progress"></div>
+    <article class="panel">
+      <div id="execution-step"></div>
+      <div class="button-row"><button id="pause-execution-button" class="secondary" onclick="App.pauseExecution()">中断して保存</button><button id="complete-execution-button" class="hidden" onclick="App.completeExecution()">作業を完了</button></div>
+    </article>
+  </div>
 </section>
