@@ -12,6 +12,8 @@ const App = (function () {
     buildSession: null,
     sourceResults: [],
     editGuide: null,
+    guides: [],
+    executions: [],
     selectedGuide: null,
     preflight: null,
     execution: null,
@@ -616,26 +618,69 @@ const App = (function () {
     }
   }
 
+  function showGuideScreen(name) {
+    ['list', 'detail', 'execution'].forEach(function (key) {
+      document.getElementById('guides-screen-' + key).classList.toggle('hidden', key !== name);
+    });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function guideTitleFor(workGuideId) {
+    const guide = (state.guides || []).find(function (item) { return String(item.workGuideId) === String(workGuideId); });
+    return guide ? guide.title : '';
+  }
+
+  function statusLabel(status) {
+    return ({ in_progress: '進行中', paused: '中断中', completed: '完了' })[status] || status;
+  }
+
   async function loadGuides() {
+    showGuideScreen('list');
     const result = await call('listWorkGuides');
-    document.getElementById('guide-list').innerHTML = result.workGuides.length ? result.workGuides.map(function (guide) {
-      return '<article class="item-card"><h3>' + escapeHtml(guide.title) + '</h3><p class="meta">' + escapeHtml(guide.workGuideId + ' / v' + guide.currentVersion) + '</p><p><a target="_blank" href="https://drive.google.com/open?id=' + attr(guide.documentFileId) + '">ドキュメント</a> / <a target="_blank" href="https://drive.google.com/open?id=' + attr(guide.jsonFileId) + '">JSON</a></p><div class="button-row"><button onclick="App.preflightGuide(\'' + attr(guide.workGuideId) + '\',' + Number(guide.currentVersion) + ')">実行前確認</button><button class="secondary" onclick="App.reviseGuide(\'' + attr(guide.workGuideId) + '\')">新バージョン編集</button></div></article>';
+    state.guides = result.workGuides || [];
+    document.getElementById('guide-list').innerHTML = state.guides.length ? state.guides.map(function (guide) {
+      return '<article class="item-card"><h3>' + escapeHtml(guide.title) + '</h3><p class="meta">' + escapeHtml(guide.workGuideId + ' / v' + guide.currentVersion) + '</p><div class="button-row"><button onclick="App.openGuideDetail(\'' + attr(guide.workGuideId) + '\',' + Number(guide.currentVersion) + ')">詳細を開く</button></div></article>';
     }).join('') : '作業ガイドはまだありません';
     await loadExecutions();
   }
 
-  async function preflightGuide(workGuideId, versionNo) {
+  async function openGuideDetail(workGuideId, versionNo) {
+    const guide = (state.guides || []).find(function (item) { return String(item.workGuideId) === String(workGuideId); });
+    state.selectedGuide = { workGuideId: workGuideId, versionNo: versionNo };
+    document.getElementById('guide-detail-title').textContent = guide ? guide.title : '作業詳細';
+    document.getElementById('guide-detail-panel').innerHTML = guide
+      ? '<h3>' + escapeHtml(guide.title) + '</h3><p class="meta">' + escapeHtml(guide.workGuideId + ' / v' + guide.currentVersion + (guide.lastExecutedAt ? ' / 最終実行 ' + guide.lastExecutedAt : '')) + '</p><p><a target="_blank" href="https://drive.google.com/open?id=' + attr(guide.documentFileId) + '">ドキュメント</a> / <a target="_blank" href="https://drive.google.com/open?id=' + attr(guide.jsonFileId) + '">JSON</a></p><div class="button-row"><button class="secondary" onclick="App.reviseGuide(\'' + attr(guide.workGuideId) + '\')">新バージョン編集</button></div>'
+      : '<p class="empty">作業ガイド情報を取得できませんでした。一覧を更新してください。</p>';
+    document.getElementById('preflight-panel').classList.add('hidden');
+    document.getElementById('preflight-result').innerHTML = '';
+    document.getElementById('guide-detail-execution-list').innerHTML = '<p class="empty">読込中...</p>';
+    showGuideScreen('detail');
     try {
-      const result = await call('preflightWorkGuide', workGuideId, versionNo);
-      state.selectedGuide = { workGuideId: workGuideId, versionNo: versionNo };
-      state.preflight = result.preflight;
-      const panel = document.getElementById('preflight-panel');
-      panel.classList.remove('hidden');
-      document.getElementById('preflight-result').innerHTML = '<div class="validation-box ' + (result.preflight.level === 'ok' ? 'success' : 'error') + '"><strong>' + escapeHtml(result.preflight.label) + '</strong></div>' + result.preflight.checks.map(function (check) { return '<div class="check-result ' + attr(check.level) + '">' + escapeHtml(check.message) + '</div>'; }).join('');
-      document.getElementById('preflight-confirm-line').classList.toggle('hidden', result.preflight.level !== 'warning');
-      document.getElementById('start-execution-button').disabled = result.preflight.level === 'unavailable';
-      panel.scrollIntoView({ behavior: 'smooth' });
+      await runPreflight(workGuideId, versionNo);
+      await loadGuideExecutions(workGuideId);
     } catch (error) { showError(error); }
+  }
+
+  async function runPreflight(workGuideId, versionNo) {
+    const result = await call('preflightWorkGuide', workGuideId, versionNo);
+    state.preflight = result.preflight;
+    document.getElementById('preflight-panel').classList.remove('hidden');
+    document.getElementById('preflight-result').innerHTML = '<div class="validation-box ' + (result.preflight.level === 'ok' ? 'success' : 'error') + '"><strong>実行前確認: ' + escapeHtml(result.preflight.label) + '</strong></div>' + result.preflight.checks.map(function (check) { return '<div class="check-result ' + attr(check.level) + '">' + escapeHtml(check.message) + '</div>'; }).join('');
+    document.getElementById('preflight-confirm-line').classList.toggle('hidden', result.preflight.level !== 'warning');
+    document.getElementById('preflight-confirm').checked = false;
+    document.getElementById('start-execution-button').disabled = result.preflight.level === 'unavailable';
+  }
+
+  async function loadGuideExecutions(workGuideId) {
+    const result = await call('listWorkGuideExecutions', workGuideId);
+    const rows = result.executions || [];
+    document.getElementById('guide-detail-execution-list').innerHTML = rows.length ? rows.map(function (execution) {
+      return '<div class="list-row"><div><strong>' + escapeHtml(statusLabel(execution.status)) + '</strong><div class="meta">' + escapeHtml(execution.executionId + (execution.startedAt ? ' / 開始 ' + execution.startedAt : '')) + '</div></div><button class="secondary" onclick="App.openExecution(\'' + attr(execution.executionId) + '\')">開く</button></div>';
+    }).join('') : '<p class="empty">この作業ガイドの実行記録はまだありません。上の「この作業を実行する」から開始できます。</p>';
+  }
+
+  async function backToGuideList() {
+    try { await loadGuides(); } catch (error) { showError(error); }
   }
 
   async function startExecution() {
@@ -645,15 +690,18 @@ const App = (function () {
       state.execution = result.execution;
       state.executionGuide = result.workGuide;
       renderExecution();
-      document.getElementById('execution-workspace').scrollIntoView({ behavior: 'smooth' });
     } catch (error) { showError(error); }
   }
 
   async function loadExecutions() {
     const result = await call('listWorkGuideExecutions', '');
-    document.getElementById('execution-list').innerHTML = result.executions.length ? result.executions.map(function (execution) {
-      return '<div class="list-row"><div><strong>' + escapeHtml(execution.executionId) + '</strong><div class="meta">' + escapeHtml(execution.workGuideId + ' / ' + execution.status) + '</div></div><button class="secondary" onclick="App.openExecution(\'' + attr(execution.executionId) + '\')">開く</button></div>';
-    }).join('') : '<p class="empty">実行記録はまだありません</p>';
+    state.executions = result.executions || [];
+    const active = state.executions.filter(function (execution) { return execution.status === 'in_progress' || execution.status === 'paused'; });
+    document.getElementById('active-work-wrap').classList.toggle('hidden', !active.length);
+    document.getElementById('execution-list').innerHTML = active.map(function (execution) {
+      const title = guideTitleFor(execution.workGuideId) || execution.workGuideId;
+      return '<div class="list-row"><div><strong>' + escapeHtml(title) + '</strong><div class="meta">' + escapeHtml(statusLabel(execution.status) + ' / ' + execution.executionId) + '</div></div><button onclick="App.openExecution(\'' + attr(execution.executionId) + '\')">' + (execution.status === 'paused' ? '再開する' : '続きを実行') + '</button></div>';
+    }).join('');
   }
 
   async function openExecution(executionId) {
@@ -662,42 +710,72 @@ const App = (function () {
       state.execution = result.execution;
       state.executionGuide = result.workGuide;
       renderExecution();
-      document.getElementById('execution-workspace').scrollIntoView({ behavior: 'smooth' });
     } catch (error) { showError(error); }
   }
 
   function renderExecution() {
     const execution = state.execution;
     const guide = state.executionGuide;
+    const steps = (guide.steps || []).slice().sort(function (a, b) { return a.order - b.order; });
+    const completedIds = (execution.executionData && execution.executionData.completedStepIds) || [];
+    showGuideScreen('execution');
     document.getElementById('pause-execution-button').classList.toggle('hidden', execution.status !== 'in_progress');
     document.getElementById('complete-execution-button').classList.add('hidden');
-    document.getElementById('execution-workspace').classList.remove('hidden');
-    document.getElementById('execution-header').innerHTML = '<h3>' + escapeHtml(guide.title) + '</h3><p class="meta">' + escapeHtml(execution.executionId + ' / ' + execution.status) + '</p><p>完了 ' + ((execution.executionData.completedStepIds || []).length) + ' / ' + guide.steps.length + '手順</p>';
+    document.getElementById('execution-header').innerHTML = '<div class="page-heading compact"><div><p class="eyebrow">' + escapeHtml(statusLabel(execution.status)) + '</p><h3>' + escapeHtml(guide.title) + '</h3></div><span class="meta">完了 ' + completedIds.length + ' / ' + steps.length + ' 手順</span></div>';
+    renderExecutionStepper(steps, execution, completedIds);
     if (execution.status === 'paused') {
-      document.getElementById('execution-step').innerHTML = '<div class="notice warning">中断中です。入力内容は保存されています。</div><button onclick="App.resumeExecution()">続きから再開</button>';
+      document.getElementById('execution-step').innerHTML = '<div class="notice warning">中断中です。ここまでの入力は保存されています。</div><button onclick="App.resumeExecution()">続きから再開</button>';
       return;
     }
     if (execution.status === 'completed') {
-      document.getElementById('execution-step').innerHTML = '<div class="validation-box success">この作業は完了しています。</div>';
+      document.getElementById('execution-step').innerHTML = '<div class="validation-box success">この作業は完了しています。お疲れさまでした。</div>';
       return;
     }
-    const step = guide.steps.find(function (item) { return item.stepId === execution.currentStepId; });
+    const stepIndex = steps.findIndex(function (item) { return item.stepId === execution.currentStepId; });
+    const step = steps[stepIndex];
     if (!step) {
-      document.getElementById('execution-step').innerHTML = '<div class="validation-box success">すべての手順を保存しました。「作業を完了」を押してください。</div>';
+      document.getElementById('execution-step').innerHTML = '<div class="validation-box success">すべての手順が完了しました。「作業を完了」を押すと実行結果を保存します。</div>';
       document.getElementById('complete-execution-button').classList.remove('hidden');
       return;
     }
-    let fields = '';
-    if (step.type === 'input') fields = (step.inputs || []).map(function (input) {
-      if (input.inputType === 'check') return '<label class="check-line"><input type="checkbox" data-exec-input="' + attr(input.inputId) + '">' + escapeHtml(input.label) + '</label>';
-      if (input.inputType === 'choice') return '<label>' + escapeHtml(input.label) + '<select data-exec-input="' + attr(input.inputId) + '"><option value="">選択</option>' + (input.choices || []).map(function (choice) { return '<option>' + escapeHtml(choice) + '</option>'; }).join('') + '</select></label>';
-      return '<label>' + escapeHtml(input.label) + '<textarea rows="3" data-exec-input="' + attr(input.inputId) + '"></textarea></label>';
-    }).join('');
-    else {
-      const savedParams = execution.executionData.stepData && execution.executionData.stepData[step.stepId];
-      fields = '<label>実行パラメータ JSON<textarea id="execution-script-params" rows="5">' + escapeHtml(JSON.stringify(savedParams || step.scriptParams || {}, null, 2)) + '</textarea></label><div class="notice warning">登録済みスクリプト「' + escapeHtml(step.scriptId) + '」を実行します。</div>';
+    const total = steps.length;
+    let actionIndex = 0;
+    let html = '<div class="exec-step-lead"><span class="exec-step-count">ステップ ' + (stepIndex + 1) + ' / ' + total + '</span><h4>' + escapeHtml(step.title) + '</h4></div>';
+    if (step.description) html += '<p>' + escapeHtml(step.description) + '</p>';
+    if (step.url) {
+      actionIndex++;
+      html += actionCardHtml(actionIndex, 'このURLを開いて作業します', '<a class="action-open" target="_blank" rel="noopener" href="' + attr(step.url) + '">🔗 URLを開く</a><div class="action-url">' + escapeHtml(step.url) + '</div>');
     }
-    document.getElementById('execution-step').innerHTML = '<div class="question"><h4>手順 ' + step.order + ': ' + escapeHtml(step.title) + '</h4><p>' + escapeHtml(step.description) + '</p>' + (step.url ? '<p><a target="_blank" href="' + attr(step.url) + '">作業対象を開く</a></p>' : '') + fields + '<p><strong>完了条件:</strong> ' + escapeHtml(step.completionCriteria) + '</p><button onclick="App.saveCurrentStep()">入力を保存して次へ</button></div>';
+    if (step.type === 'script') {
+      actionIndex++;
+      const savedParams = execution.executionData.stepData && execution.executionData.stepData[step.stepId];
+      html += actionCardHtml(actionIndex, '登録スクリプト「' + escapeHtml(step.scriptId) + '」を実行します', '<label>実行パラメータ JSON<textarea id="execution-script-params" rows="5">' + escapeHtml(JSON.stringify(savedParams || step.scriptParams || {}, null, 2)) + '</textarea></label><div class="notice warning" style="margin:.6rem 0 0">「この手順を完了して次へ」を押すとスクリプトが実行されます。</div>');
+    } else {
+      actionIndex++;
+      const fields = (step.inputs || []).map(execInputFieldHtml).join('') || '<p class="muted">入力項目はありません。作業を終えたら次へ進んでください。</p>';
+      html += actionCardHtml(actionIndex, '作業した結果を入力します', fields);
+    }
+    if (step.completionCriteria) html += '<div class="completion-note"><strong>完了条件:</strong> ' + escapeHtml(step.completionCriteria) + '</div>';
+    html += '<div class="button-row" style="margin-top:1rem"><button onclick="App.saveCurrentStep()">' + (stepIndex + 1 >= total ? 'この手順を保存して完了へ' : 'この手順を完了して次へ →') + '</button></div>';
+    document.getElementById('execution-step').innerHTML = html;
+  }
+
+  function renderExecutionStepper(steps, execution, completedIds) {
+    document.getElementById('execution-progress').innerHTML = '<ol class="stepper">' + steps.map(function (step) {
+      const done = completedIds.indexOf(step.stepId) >= 0;
+      const current = String(step.stepId) === String(execution.currentStepId) && execution.status === 'in_progress';
+      return '<li class="' + (current ? 'current' : (done ? 'done' : '')) + '" title="' + attr(step.title) + '">' + step.order + '</li>';
+    }).join('') + '</ol>';
+  }
+
+  function actionCardHtml(index, title, body) {
+    return '<div class="action-step"><div class="action-title"><span class="action-index">' + index + '</span>' + title + '</div><div class="action-body">' + body + '</div></div>';
+  }
+
+  function execInputFieldHtml(input) {
+    if (input.inputType === 'check') return '<label class="check-line"><input type="checkbox" data-exec-input="' + attr(input.inputId) + '">' + escapeHtml(input.label) + '</label>';
+    if (input.inputType === 'choice') return '<label>' + escapeHtml(input.label) + '<select data-exec-input="' + attr(input.inputId) + '"><option value="">選択</option>' + (input.choices || []).map(function (choice) { return '<option>' + escapeHtml(choice) + '</option>'; }).join('') + '</select></label>';
+    return '<label>' + escapeHtml(input.label) + '<textarea rows="3" data-exec-input="' + attr(input.inputId) + '"></textarea></label>';
   }
 
   async function saveCurrentStep() {
@@ -798,7 +876,7 @@ const App = (function () {
     loadActions: loadActions, startBuild: startBuild, reviseGuide: reviseGuide, searchSources: searchSources, prepareGuidePrompt: prepareGuidePrompt,
     importGuide: importGuide, prepareRevisionPrompt: prepareRevisionPrompt, addGuideStep: addGuideStep, deleteGuideStep: deleteGuideStep, moveGuideStep: moveGuideStep,
     duplicateGuideStep: duplicateGuideStep, saveBuildDraft: saveBuildDraft, saveGuide: saveGuide, loadGuides: loadGuides,
-    preflightGuide: preflightGuide, startExecution: startExecution, loadExecutions: loadExecutions, openExecution: openExecution,
+    openGuideDetail: openGuideDetail, backToGuideList: backToGuideList, startExecution: startExecution, loadExecutions: loadExecutions, openExecution: openExecution,
     saveCurrentStep: saveCurrentStep, pauseExecution: pauseExecution, resumeExecution: resumeExecution, completeExecution: completeExecution,
     runDiagnostics: runDiagnostics, loadAllowedActions: loadAllowedActions, registerAction: registerAction, unregisterAction: unregisterAction,
     copyText: copyText, copyPromptToChatGpt: copyPromptToChatGpt
