@@ -1,6 +1,24 @@
 <section id="view-admin" class="view">
   <div class="page-heading"><div><p class="eyebrow">ADMIN</p><h2>管理・診断</h2></div></div>
   <div class="two-columns">
+    <article class="panel">
+      <h3>文字起こしの自動登録</h3>
+      <p class="muted">時間主導トリガーで 01_文字起こし フォルダを定期確認し、未登録の文字起こしを会議として自動登録します（タイトル・カテゴリーはファイル名と格納フォルダから自動判定。生成AIのAPIは使いません）。登録後はダッシュボードに「解析待ち」として表示されます。</p>
+      <div id="automation-status" class="meta">読込中...</div>
+      <div class="button-row">
+        <button id="automation-toggle-button" onclick="App.toggleAutoRegister()" disabled>読込中...</button>
+        <button class="secondary" onclick="App.runAutoRegisterNow()">今すぐ実行</button>
+      </div>
+      <div id="automation-last-run"></div>
+    </article>
+    <article class="panel">
+      <h3>スクリプト化候補（繰り返し検出）</h3>
+      <p class="muted">複数の作業ガイド、または複数回の実行で繰り返されている手動手順を検出します。上位の候補から登録スクリプト化を検討してください（SPEC の最終目的「繰り返し作業のスクリプト蓄積」を支援します）。</p>
+      <div id="automation-candidates" class="item-list empty">読込中...</div>
+      <button class="secondary" onclick="App.loadAutomationCandidates()">再検出</button>
+    </article>
+  </div>
+  <div class="two-columns">
     <article class="panel"><h3>設定診断</h3><button onclick="App.runDiagnostics()">診断を実行</button><div id="diagnostics-result"></div></article>
     <article class="panel"><h3>登録スクリプト</h3><p class="muted">コードに実装され、本人が明示登録した処理だけが作業ガイドから実行できます。</p><div id="allowed-actions"></div><button class="secondary" onclick="App.loadAllowedActions()">一覧更新</button></article>
   </div>
