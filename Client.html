@@ -18,7 +18,8 @@ const App = (function () {
     preflight: null,
     execution: null,
     executionGuide: null,
-    saveRequestToken: ''
+    saveRequestToken: '',
+    automation: null
   };
 
   function server(name) {
@@ -103,7 +104,7 @@ const App = (function () {
       if (name === 'quiz') await populateQuizMeetings();
       if (name === 'actions') await loadActions();
       if (name === 'guides') await loadGuides();
-      if (name === 'admin') { await runDiagnostics(); await loadAllowedActions(); }
+      if (name === 'admin') { await runDiagnostics(); await loadAllowedActions(); await loadAutomationPanel(); await loadAutomationCandidates(); }
     } catch (error) { showError(error); }
   }
 
@@ -834,6 +835,65 @@ const App = (function () {
   async function registerAction(scriptId) { try { await call('registerAllowedAction', scriptId); toast('許可済みスクリプトへ登録しました。'); await loadAllowedActions(); } catch (error) { showError(error); } }
   async function unregisterAction(scriptId) { if (!window.confirm('登録を解除しますか？')) return; try { await call('unregisterAllowedAction', scriptId); toast('登録を解除しました。'); await loadAllowedActions(); } catch (error) { showError(error); } }
 
+  async function loadAutomationPanel() {
+    try {
+      state.automation = await call('getAutomationStatus');
+      renderAutomationPanel();
+    } catch (error) { showError(error); }
+  }
+
+  function renderAutomationPanel() {
+    const automation = state.automation || {};
+    const enabled = Boolean(automation.autoRegisterEnabled);
+    document.getElementById('automation-status').innerHTML = enabled
+      ? '<span class="status-pill">有効</span> ' + escapeHtml(automation.intervalMinutes + '分ごとに自動登録を実行します。')
+      : '<span class="status-pill">停止中</span> トリガーは設定されていません。';
+    const button = document.getElementById('automation-toggle-button');
+    button.disabled = false;
+    button.textContent = enabled ? '自動登録を停止' : '自動登録を有効化';
+    document.getElementById('automation-last-run').innerHTML = automationLastRunHtml(automation.lastRun);
+  }
+
+  function automationLastRunHtml(lastRun) {
+    if (!lastRun) return '<p class="muted">まだ実行されていません。</p>';
+    const registered = lastRun.registered || [];
+    const skipped = lastRun.skipped || [];
+    let html = '<p class="meta">最終実行: ' + escapeHtml(lastRun.ranAt) + ' / 登録 ' + registered.length + '件 / 対象外 ' + skipped.length + '件</p>';
+    if (registered.length) html += '<ul>' + registered.map(function (item) { return '<li>' + escapeHtml(item.name + ' → ' + item.meetingId + '（' + item.category + '）') + '</li>'; }).join('') + '</ul>';
+    if (skipped.length) html += '<details><summary>対象外の理由</summary><ul>' + skipped.map(function (item) { return '<li>' + escapeHtml(item.name + ': ' + item.reason) + '</li>'; }).join('') + '</ul></details>';
+    return html;
+  }
+
+  async function toggleAutoRegister() {
+    try {
+      const enabled = !(state.automation && state.automation.autoRegisterEnabled);
+      await call('setAutoRegisterEnabled', enabled);
+      toast(enabled ? '文字起こしの自動登録を有効化しました。' : '文字起こしの自動登録を停止しました。');
+      await loadAutomationPanel();
+    } catch (error) { showError(error); }
+  }
+
+  async function runAutoRegisterNow() {
+    try {
+      const result = await call('runAutoRegisterNow');
+      const registered = (result.summary && result.summary.registered) || [];
+      toast(registered.length ? registered.length + '件の文字起こしを会議として登録しました。' : '新しく登録できる文字起こしはありませんでした。');
+      await loadAutomationPanel();
+      if (registered.length) await loadTranscriptWorkflows();
+    } catch (error) { showError(error); }
+  }
+
+  async function loadAutomationCandidates() {
+    try {
+      const result = await call('listAutomationCandidates');
+      const candidates = result.candidates || [];
+      document.getElementById('automation-candidates').innerHTML = candidates.length ? candidates.map(function (group) {
+        const guides = group.occurrences.map(function (occurrence) { return occurrence.guideTitle; }).filter(function (title, index, list) { return list.indexOf(title) === index; });
+        return '<div class="list-row"><div><strong>' + escapeHtml(group.sampleTitle) + '</strong><div class="meta">' + escapeHtml('ガイド ' + group.guideCount + '件で使用 / 累計実行 ' + group.executionCount + '回 / 対象: ' + guides.join('、')) + '</div></div></div>';
+      }).join('') : '繰り返し手順はまだ検出されていません。ガイドの作成・実行が増えると候補が表示されます。';
+    } catch (error) { showError(error); }
+  }
+
   async function copyText(id) {
     const field = document.getElementById(id);
     try {
@@ -879,6 +939,7 @@ const App = (function () {
     openGuideDetail: openGuideDetail, backToGuideList: backToGuideList, startExecution: startExecution, loadExecutions: loadExecutions, openExecution: openExecution,
     saveCurrentStep: saveCurrentStep, pauseExecution: pauseExecution, resumeExecution: resumeExecution, completeExecution: completeExecution,
     runDiagnostics: runDiagnostics, loadAllowedActions: loadAllowedActions, registerAction: registerAction, unregisterAction: unregisterAction,
+    loadAutomationPanel: loadAutomationPanel, toggleAutoRegister: toggleAutoRegister, runAutoRegisterNow: runAutoRegisterNow, loadAutomationCandidates: loadAutomationCandidates,
     copyText: copyText, copyPromptToChatGpt: copyPromptToChatGpt
   };
 })();
