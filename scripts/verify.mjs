@@ -234,6 +234,9 @@ const config = readFileSync(resolve(projectRoot, 'Config.gs'), 'utf8');
 for (const required of ['AiInteractions', 'aiInteractionLogs', 'automationStatus', 'autoReviewJson']) {
   assert.match(config, new RegExp(required), `Configuration ${required} is missing`);
 }
+const distCode = readFileSync(resolve(projectRoot, 'dist/Code.gs'), 'utf8');
+const firstDistSection = distCode.match(/^\/\/ ===== (.+\.gs) =====$/m);
+assert.equal(firstDistSection && firstDistSection[1], 'Config.gs', 'User configuration must be the first section in dist/Code.gs');
 const workGuideService = readFileSync(resolve(projectRoot, 'WorkGuideService.gs'), 'utf8');
 assert.match(workGuideService, /function approveWorkGuide\(/, 'Approval endpoint is missing');
 assert.match(workGuideService, /guideNeedsReview/, 'Generated guides must support needs_review state');

@@ -9,7 +9,7 @@
 リポジトリに生成済みの `dist/Code.gs` と `dist/Index.html` があるため、コードの貼り付けは二回だけです。分割ソースを変更した後に生成物を更新する場合は、Node.js 20以上の環境で `npm run build` を実行してください（`clasp` は不要です）。
 
 1. Apps Script で新しいスタンドアロンプロジェクトを作成する。
-2. 最初からある `Code.gs` の内容をすべて削除し、`dist/Code.gs` の内容を一回貼り付ける。
+2. 最初からある `Code.gs` の内容をすべて削除し、`dist/Code.gs` の内容を一回貼り付ける。フォルダ名など利用者が変更する設定は、貼り付けたコードの先頭にある `Config.gs` セクションへまとまっている。
 3. 左側の「ファイルを追加 > HTML」を選び、名前を拡張子なしで `Index` として作成する。作成された `Index.html` の内容をすべて削除し、`dist/Index.html` の内容を一回貼り付ける。
 4. 左側の「サービスを追加」から `Drive API`（v3、識別子 `Drive`）を追加する。
 5. Apps Script エディタで `runSetupGuide()` を実行し、Drive / Docs / Sheets の権限を許可する。
