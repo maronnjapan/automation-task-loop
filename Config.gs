@@ -11,8 +11,11 @@ const APP_CONFIG = Object.freeze({
     rootFolderId: 'ROOT_FOLDER_ID',
     spreadsheetId: 'MANAGEMENT_SPREADSHEET_ID',
     setupCompletedAt: 'SETUP_COMPLETED_AT',
-    openAiApiKey: 'OPENAI_API_KEY',
-    openAiModel: 'OPENAI_MODEL',
+    aiProvider: 'AI_PROVIDER',
+    aiApiKey: 'AI_API_KEY',
+    aiModel: 'AI_MODEL',
+    legacyOpenAiApiKey: 'OPENAI_API_KEY',
+    legacyOpenAiModel: 'OPENAI_MODEL',
     aiAutomationEnabled: 'AI_AUTOMATION_ENABLED',
     aiDataConsent: 'AI_DATA_CONSENT',
     aiMaxRepairAttempts: 'AI_MAX_REPAIR_ATTEMPTS',
@@ -44,7 +47,13 @@ const APP_CONFIG = Object.freeze({
   cacheSeconds: 21600,
   maxTranscriptCharacters: 120000,
   maxSourceCharacters: 30000,
-  defaultAiModel: 'gpt-5.6-terra',
+  defaultAiProvider: 'openai',
+  defaultAiModels: Object.freeze({
+    openai: 'gpt-5.6-terra',
+    gemini: 'gemini-2.5-flash',
+    anthropic: 'claude-opus-4-8',
+    openrouter: ''
+  }),
   defaultAiMaxRepairAttempts: 1,
   automationTimeBudgetMs: 240000,
   managementSchemaVersion: '2026-07-ai-automation-v1'

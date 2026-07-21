@@ -16,11 +16,29 @@
     <article class="panel"><h3>登録済み会議</h3><div id="meeting-list" class="item-list empty">まだありません</div></article>
   </div>
   <article id="analysis-workspace" class="panel hidden">
-    <div class="page-heading compact"><h3>2. AI 解析</h3><span id="analysis-meeting-label"></span></div>
-    <label>解析プロンプト<textarea id="analysis-prompt" rows="10" readonly></textarea></label>
-    <button onclick="App.copyPromptToChatGpt('analysis-prompt')">プロンプトをコピーして ChatGPT を開く</button>
-    <label>3. AI回答 JSON<textarea id="analysis-json" rows="13" placeholder="JSONだけを貼り付け"></textarea></label>
-    <div class="button-row"><button class="secondary" onclick="App.validateAnalysis()">即時検証</button><button id="save-analysis-button" onclick="App.saveAnalysis()">検証して保存</button></div>
-    <div id="analysis-validation" class="validation-box hidden"></div>
+    <div class="page-heading compact"><h3>2. 人が読める形で内容と方向性を確認</h3><span id="analysis-meeting-label"></span></div>
+    <p class="muted">まずJSONを作らず、要約・クイズの方向性と、作成候補ガイドの目的・具体作業を確認します。</p>
+    <label>確認案を作るプロンプト<textarea id="analysis-prompt" rows="10" readonly></textarea></label>
+    <button id="copy-analysis-prompt-button" onclick="App.copyText('analysis-prompt')">確認案プロンプトをコピー</button>
+    <p class="meta">生成AIへ貼り付け、返ってきた読みやすい文章を下へ貼り付けてください。</p>
+    <label>生成AIの確認案（内容を直接修正できます）<textarea id="analysis-review" class="human-readable" rows="16" placeholder="要約、クイズの方向性、作成したいガイドと具体的な作業の案を貼り付け"></textarea></label>
+    <div class="review-gate">
+      <strong>JSON化する前の確認</strong>
+      <ul>
+        <li>会議の要約と決定・未決事項が合っている</li>
+        <li>理解度クイズで確認したい内容が合っている</li>
+        <li>作成したいガイドごとに「何をするか」と「具体的な作業」がイメージできる</li>
+      </ul>
+      <label class="check-line"><input id="analysis-review-confirm" type="checkbox"> 上記を確認し、この内容をJSON化する方向性として承認します</label>
+      <button onclick="App.prepareAnalysisJsonPrompt()">この方向性でJSON用プロンプトを作る</button>
+    </div>
+    <div id="analysis-json-stage" class="json-stage hidden">
+      <h3>3. 確認済み内容をアプリ用JSONにする</h3>
+      <label>JSON生成プロンプト<textarea id="analysis-json-prompt" rows="10" readonly></textarea></label>
+      <button id="copy-analysis-json-prompt-button" onclick="App.copyText('analysis-json-prompt')">JSON生成プロンプトをコピー</button>
+      <label>生成AIの回答JSON<textarea id="analysis-json" rows="13" placeholder="JSONだけを貼り付け"></textarea></label>
+      <div class="button-row"><button class="secondary" onclick="App.validateAnalysis()">即時検証</button><button id="save-analysis-button" onclick="App.saveAnalysis()">検証して保存</button></div>
+      <div id="analysis-validation" class="validation-box hidden"></div>
+    </div>
   </article>
 </section>

@@ -8,13 +8,14 @@
     <header class="app-header">
       <div>
         <h1><?= appName ?></h1>
-        <p>会議記録からクイズと承認待ちの作業ガイドを自動で用意する</p>
+        <p>会議記録から、手動または自動で実行可能な作業ガイドを作る</p>
       </div>
       <span id="global-status" class="status-pill">読込中</span>
     </header>
     <nav class="app-nav" aria-label="メインメニュー">
       <button data-view="dashboard" class="active">ダッシュボード</button>
       <button data-view="quiz">理解度クイズ</button>
+      <button data-view="actions">ガイド作成</button>
       <button data-view="guides">作業ガイド</button>
       <button data-view="admin">管理・診断</button>
     </nav>

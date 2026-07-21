@@ -75,7 +75,25 @@ function getMeetingAnalysisPrompt(meetingId) {
   return withClientError_(function () {
     const meeting = requireMeeting_(meetingId);
     const transcript = readTextFile_(meeting.transcriptFileId, APP_CONFIG.maxTranscriptCharacters);
-    return { success: true, prompt: buildMeetingAnalysisPrompt_(meeting, transcript), characterCount: transcript.length };
+    return { success: true, prompt: buildMeetingAnalysisReviewPrompt_(meeting, transcript), characterCount: transcript.length };
+  });
+}
+
+function prepareMeetingAnalysisJsonPrompt(meetingId, reviewedText, confirmed) {
+  return withClientError_(function () {
+    const meeting = requireMeeting_(meetingId);
+    assertApp_(confirmed === true, 'REVIEW_CONFIRMATION_REQUIRED', '要約・クイズ・作業ガイドの方向性を確認してください。');
+    assertApp_(nonEmptyString_(reviewedText), 'VALIDATION_ERROR', '生成AIの読みやすい確認案を貼り付け、必要なら修正してください。');
+    const approvedReview = reviewedText.trim();
+    assertApp_(approvedReview.length <= 50000, 'VALIDATION_ERROR', '確認案は50,000文字以内にしてください。');
+    const transcript = readTextFile_(meeting.transcriptFileId, APP_CONFIG.maxTranscriptCharacters);
+    const reviewPrompt = buildMeetingAnalysisReviewPrompt_(meeting, transcript);
+    recordManualAiInteraction_({ meetingId: meeting.meetingId, phase: 'meeting_analysis_alignment' }, reviewPrompt, approvedReview, { valid: true, errors: [] });
+    return {
+      success: true,
+      prompt: buildMeetingAnalysisJsonPrompt_(meeting, transcript, approvedReview),
+      approvedReview: approvedReview
+    };
   });
 }
 

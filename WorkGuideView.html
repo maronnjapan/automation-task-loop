@@ -1,8 +1,21 @@
 <section id="view-guides" class="view">
   <!-- 画面1: 作業一覧 -->
   <div id="guides-screen-list" class="guide-screen">
-    <div class="page-heading"><div><p class="eyebrow">PHASE 5</p><h2>作業一覧</h2></div><button class="secondary" onclick="App.loadGuides()">一覧更新</button></div>
-    <div class="notice info">「承認待ち」を先に確認してください。内容がよければOKを押すだけで実行可能になります。生成AIとの往復は詳細画面から後で確認できます。</div>
+    <div class="page-heading"><div><p class="eyebrow">PHASE 5</p><h2>作業一覧</h2></div><div class="button-row"><button id="manual-guide-create-button" onclick="App.showView('actions')">手動で新規作成</button><button class="secondary" onclick="App.loadGuides()">一覧更新</button></div></div>
+    <div class="creation-options" aria-label="作業ガイドの作成方法">
+      <article class="creation-option featured">
+        <p class="eyebrow">MANUAL</p>
+        <h3>生成AIとやりとりして作る</h3>
+        <p>アプリが用意したプロンプトを好きな生成AIへ貼り付け、回答JSONをこの画面へ戻して確認・編集・保存します。APIキーは不要です。</p>
+        <button onclick="App.showView('actions')">作業候補を選ぶ</button>
+      </article>
+      <article class="creation-option">
+        <p class="eyebrow">AUTOMATIC</p>
+        <h3>APIで自動生成する</h3>
+        <p>生成AI APIを設定すると、初稿作成・AI検収・承認待ち保存まで自動化できます。手動作成と併用できます。</p>
+        <button class="secondary" onclick="App.showView('admin')">自動化を設定する</button>
+      </article>
+    </div>
     <div id="active-work-wrap" class="hidden">
       <div class="page-heading compact"><h3>進行中・中断中の作業</h3></div>
       <div id="execution-list" class="item-list"></div>

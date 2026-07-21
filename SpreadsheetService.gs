@@ -21,10 +21,17 @@ function appendObject_(sheetName, value) {
     if (cell === undefined || cell === null) return '';
     return typeof cell === 'object' ? JSON.stringify(cell) : cell;
   });
-  const sheet = getSheet_(sheetName);
-  const range = sheet.getRange(sheet.getLastRow() + 1, 1, 1, row.length);
-  range.setNumberFormat('@').setValues([row]);
-  return value;
+  const lock = LockService.getScriptLock();
+  const alreadyHeld = lock.hasLock();
+  if (!alreadyHeld) lock.waitLock(30000);
+  try {
+    const sheet = getSheet_(sheetName);
+    const range = sheet.getRange(sheet.getLastRow() + 1, 1, 1, row.length);
+    range.setNumberFormat('@').setValues([row]);
+    return value;
+  } finally {
+    if (!alreadyHeld) lock.releaseLock();
+  }
 }
 
 function getRows_(sheetName) {

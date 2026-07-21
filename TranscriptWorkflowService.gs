@@ -42,7 +42,7 @@ function listTranscriptWorkflows() {
         entry.automationError = meeting.automationError || '';
         entry.completedAt = meeting.completedAt || '';
         if (String(meeting.workflowStatus) === 'completed') entry.completed = true;
-        entry.quizCompleted = quizSessions.some(function (row) { return String(row.meetingId) === String(meeting.meetingId) && String(row.status) === 'completed'; });
+        entry.quizCompleted = quizSessions.some(function (row) { return String(row.meetingId) === String(meeting.meetingId) && isQuizSessionPassed_(row); });
         entry.candidateActionCount = actions.filter(function (row) { return String(row.meetingId) === String(meeting.meetingId) && String(row.status) === 'candidate'; }).length;
         entry.guideCount = guides.filter(function (row) { return String(row.meetingId) === String(meeting.meetingId); }).length;
         entry.guideNeedsReviewCount = guides.filter(function (row) { return String(row.meetingId) === String(meeting.meetingId) && String(row.status) === APP_CONFIG.statuses.guideNeedsReview; }).length;

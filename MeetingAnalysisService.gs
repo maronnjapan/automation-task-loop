@@ -1,6 +1,10 @@
 function saveMeetingAnalysis(meetingId, rawText, options) {
   return withClientError_(function () {
     options = options || {};
+    if (options.skipInteractionLog !== true) {
+      assertApp_(options.reviewConfirmed === true, 'REVIEW_CONFIRMATION_REQUIRED', 'JSONを保存する前に、読みやすい確認案で方向性を確認してください。');
+      assertApp_(nonEmptyString_(options.approvedReview), 'VALIDATION_ERROR', '確認済みの要約・クイズ・ガイド方針がありません。');
+    }
     const analysis = validateMeetingAnalysis_(parsePastedJson_(rawText));
     const lock = LockService.getScriptLock();
     lock.waitLock(30000);
@@ -28,7 +32,7 @@ function saveMeetingAnalysis(meetingId, rawText, options) {
       updateRow_('Meetings', meeting._rowNumber, { analysisStatus: 'completed', automationStatus: 'analysis_completed', automationError: '', automationUpdatedAt: nowIso_() });
       if (options.skipInteractionLog !== true) {
         const transcript = readTextFile_(meeting.transcriptFileId, APP_CONFIG.maxTranscriptCharacters);
-        recordManualAiInteraction_({ meetingId: meeting.meetingId, phase: 'meeting_analysis' }, buildMeetingAnalysisPrompt_(meeting, transcript), rawText, { valid: true, errors: [] });
+        recordManualAiInteraction_({ meetingId: meeting.meetingId, phase: 'meeting_analysis' }, buildMeetingAnalysisJsonPrompt_(meeting, transcript, options.approvedReview.trim()), rawText, { valid: true, errors: [] });
       }
       return {
         success: true, meetingId: meeting.meetingId, summaryFileId: summaryFile.getId(), summaryFileUrl: summaryFile.getUrl(),

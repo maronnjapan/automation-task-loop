@@ -1,8 +1,8 @@
 /**
  * Unattended path:
- * transcript registration -> meeting analysis/quiz -> guide draft -> AI review
- * and revision -> needs_review. Human approval is intentionally the only gate
- * before a generated guide can be executed.
+ * transcript registration -> meeting analysis/quiz -> quiz pass -> guide draft
+ * -> AI review and revision -> needs_review. Each meeting advances independently,
+ * so a quiz waiting in one meeting never blocks a passed meeting.
  */
 function processPendingAiAutomation_(summary, forceRetry) {
   summary = summary || {};
@@ -14,7 +14,7 @@ function processPendingAiAutomation_(summary, forceRetry) {
   if (!settings.autoProcessingEnabled) {
     summary.aiAutomationSkipped = settings.apiKeyConfigured
       ? '生成AIの全自動処理が停止中です。'
-      : 'OpenAI APIキーが未設定です。既存の手動フローを利用できます。';
+      : '生成AIのAPIキーが未設定です。既存の手動フローを利用できます。';
     return summary;
   }
 
@@ -22,13 +22,22 @@ function processPendingAiAutomation_(summary, forceRetry) {
   let processedItems = 0;
   const attemptedMeetings = {};
   const attemptedActions = {};
+  const attemptedGuideMeetings = {};
+  let preferGuide = true;
   while (Date.now() < deadline && processedItems < 4) {
-    const meeting = nextMeetingForAiAnalysis_(forceRetry, attemptedMeetings);
+    let meeting = null;
+    let action = null;
+    if (preferGuide) {
+      action = claimNextActionForAiGuide_(forceRetry, attemptedActions, attemptedGuideMeetings);
+      if (!action) meeting = claimNextMeetingForAiAnalysis_(forceRetry, attemptedMeetings);
+    } else {
+      meeting = claimNextMeetingForAiAnalysis_(forceRetry, attemptedMeetings);
+      if (!meeting) action = claimNextActionForAiGuide_(forceRetry, attemptedActions, attemptedGuideMeetings);
+    }
     if (meeting) {
       attemptedMeetings[String(meeting.meetingId)] = true;
       processedItems += 1;
-      const attempt = Number(meeting.automationAttempts || 0) + 1;
-      updateRow_('Meetings', meeting._rowNumber, { automationStatus: 'analyzing', automationAttempts: attempt, automationError: '', automationUpdatedAt: nowIso_() });
+      preferGuide = true;
       try {
         const result = automateMeetingAnalysis_(meeting);
         summary.analyzedMeetings.push(result);
@@ -39,12 +48,11 @@ function processPendingAiAutomation_(summary, forceRetry) {
       continue;
     }
 
-    const action = nextActionForAiGuide_(forceRetry, attemptedActions);
     if (action) {
       attemptedActions[String(action.actionId)] = true;
+      attemptedGuideMeetings[String(action.meetingId)] = true;
       processedItems += 1;
-      const attempt = Number(action.automationAttempts || 0) + 1;
-      updateRow_('Actions', action._rowNumber, { automationStatus: 'generating', automationAttempts: attempt, automationError: '' });
+      preferGuide = false;
       try {
         const result = automateActionGuide_(action);
         summary.generatedGuides.push(result);
@@ -61,12 +69,39 @@ function processPendingAiAutomation_(summary, forceRetry) {
   const stillPendingMeetings = getRows_('Meetings').filter(function (row) {
     return String(row.workflowStatus) !== 'completed' && String(row.analysisStatus) !== 'completed';
   });
+  const passedQuizMeetings = passedQuizMeetingIds_();
+  const waitingForQuiz = {};
   const stillPendingActions = getRows_('Actions').filter(function (row) {
-    return isActionAutoGuideRequired_(row) && !findGuideForAction_(row.actionId) && String(row.automationStatus) !== 'not_required';
+    if (!isActionAutoGuideRequired_(row) || findGuideForAction_(row.actionId) || String(row.automationStatus) === 'not_required') return false;
+    if (!passedQuizMeetings[String(row.meetingId)]) {
+      waitingForQuiz[String(row.meetingId)] = true;
+      return false;
+    }
+    return true;
   });
   stillPendingMeetings.forEach(function (row) { summary.automationPending.push({ meetingId: row.meetingId, phase: 'meeting_analysis' }); });
+  Object.keys(waitingForQuiz).forEach(function (meetingId) { summary.automationPending.push({ meetingId: meetingId, phase: 'quiz' }); });
   stillPendingActions.forEach(function (row) { summary.automationPending.push({ meetingId: row.meetingId, actionId: row.actionId, phase: 'work_guide' }); });
   return summary;
+}
+
+function claimNextMeetingForAiAnalysis_(forceRetry, excluded) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const meeting = nextMeetingForAiAnalysis_(forceRetry, excluded);
+    if (!meeting) return null;
+    const attempt = Number(meeting.automationAttempts || 0) + 1;
+    updateRow_('Meetings', meeting._rowNumber, {
+      automationStatus: 'analyzing', automationAttempts: attempt,
+      automationError: '', automationUpdatedAt: nowIso_()
+    });
+    meeting.automationStatus = 'analyzing';
+    meeting.automationAttempts = attempt;
+    return meeting;
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function nextMeetingForAiAnalysis_(forceRetry, excluded) {
@@ -79,16 +114,75 @@ function nextMeetingForAiAnalysis_(forceRetry, excluded) {
   }) || null;
 }
 
-function nextActionForAiGuide_(forceRetry, excluded) {
-  return getRows_('Actions').find(function (row) {
+function nextActionForAiGuide_(forceRetry, excluded, deprioritizedMeetings) {
+  const meetings = {};
+  getRows_('Meetings').forEach(function (meeting) { meetings[String(meeting.meetingId)] = meeting; });
+  const existingGuides = {};
+  getRows_('WorkGuides').forEach(function (guide) { existingGuides[String(guide.actionId)] = true; });
+  const passedQuizMeetings = passedQuizMeetingIds_();
+  const manualBuildActions = activeManualWorkGuideBuildActionIds_();
+  const candidates = getRows_('Actions').filter(function (row) {
     if (excluded && excluded[String(row.actionId)]) return false;
-    if (!isActionAutoGuideRequired_(row) || findGuideForAction_(row.actionId)) return false;
+    if (!isActionAutoGuideRequired_(row) || existingGuides[String(row.actionId)]) return false;
+    if (manualBuildActions[String(row.actionId)]) return false;
     if (String(row.status) === 'guide_ready' || String(row.status) === 'guide_review') return false;
     if (String(row.automationStatus) === 'generating') return false;
     if (!forceRetry && Number(row.automationAttempts || 0) >= 3) return false;
-    const meeting = findRow_('Meetings', function (candidate) { return String(candidate.meetingId) === String(row.meetingId); });
-    return meeting && String(meeting.analysisStatus) === 'completed' && String(meeting.workflowStatus) !== 'completed';
-  }) || null;
+    const meeting = meetings[String(row.meetingId)];
+    return Boolean(
+      meeting && String(meeting.analysisStatus) === 'completed' && String(meeting.workflowStatus) !== 'completed' &&
+      passedQuizMeetings[String(row.meetingId)]
+    );
+  });
+  return candidates.find(function (row) {
+    return !deprioritizedMeetings || !deprioritizedMeetings[String(row.meetingId)];
+  }) || candidates[0] || null;
+}
+
+function activeManualWorkGuideBuildActionIds_() {
+  const actions = {};
+  getRows_('Actions').forEach(function (row) { actions[String(row.actionId)] = row; });
+  const manual = {};
+  getRows_('WorkGuideBuildSessions').forEach(function (session) {
+    if (['in_progress', 'draft'].indexOf(String(session.status)) < 0) return;
+    const data = parseJsonCell_(session.dataJson, {});
+    const action = actions[String(session.actionId)] || {};
+    const legacyAutomatic = !data.creationMode && ['generating', 'failed'].indexOf(String(action.automationStatus)) >= 0;
+    if (data.creationMode !== 'automatic' && !legacyAutomatic) manual[String(session.actionId)] = true;
+  });
+  return manual;
+}
+
+function updateAutomaticWorkGuideBuild_(buildSessionId, currentStep, data) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const session = requireBuildSession_(buildSessionId);
+    const currentData = parseJsonCell_(session.dataJson, {});
+    assertApp_(currentData.creationMode === 'automatic', 'MANUAL_BUILD_IN_PROGRESS', '手動作成へ切り替えられたため、自動生成を停止しました。');
+    data.creationMode = 'automatic';
+    updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: currentStep, dataJson: data, updatedAt: nowIso_() });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function claimNextActionForAiGuide_(forceRetry, excluded, deprioritizedMeetings) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const action = nextActionForAiGuide_(forceRetry, excluded, deprioritizedMeetings);
+    if (!action) return null;
+    const attempt = Number(action.automationAttempts || 0) + 1;
+    updateRow_('Actions', action._rowNumber, {
+      automationStatus: 'generating', automationAttempts: attempt, automationError: ''
+    });
+    action.automationStatus = 'generating';
+    action.automationAttempts = attempt;
+    return action;
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function automateMeetingAnalysis_(meeting) {
@@ -102,7 +196,7 @@ function automateMeetingAnalysis_(meeting) {
   });
   const saved = saveMeetingAnalysis(meeting.meetingId, JSON.stringify(generated.value), { skipInteractionLog: true });
   assertApp_(saved && saved.success, saved && saved.code || 'ANALYSIS_SAVE_FAILED', saved && saved.error || '自動生成した会議解析を保存できませんでした。', saved && saved.details);
-  updateRow_('Meetings', meeting._rowNumber, { automationStatus: 'guide_generation_pending', automationError: '', automationUpdatedAt: nowIso_() });
+  updateRow_('Meetings', meeting._rowNumber, { automationStatus: 'quiz_ready', automationError: '', automationUpdatedAt: nowIso_() });
   refreshMeetingAutomationStatus_(meeting.meetingId);
   return {
     meetingId: meeting.meetingId,
@@ -116,10 +210,11 @@ function automateMeetingAnalysis_(meeting) {
 function automateActionGuide_(action) {
   const existing = findGuideForAction_(action.actionId);
   if (existing) return { actionId: action.actionId, workGuideId: existing.workGuideId, skippedExisting: true };
+  requirePassedQuizForMeeting_(action.meetingId);
   const meeting = requireMeeting_(action.meetingId);
   const analysisRow = findRow_('MeetingAnalyses', function (row) { return String(row.meetingId) === String(action.meetingId); });
   assertApp_(analysisRow, 'ANALYSIS_NOT_FOUND', '作業ガイドの前に会議解析が必要です。');
-  const started = startWorkGuideBuild(action.actionId);
+  const started = startWorkGuideBuild(action.actionId, 'automatic');
   assertApp_(started && started.success, started && started.code || 'BUILD_START_FAILED', started && started.error || '作成セッションを開始できません。', started && started.details);
   const session = requireBuildSession_(started.session.buildSessionId);
   const data = parseJsonCell_(session.dataJson, {});
@@ -145,7 +240,7 @@ function automateActionGuide_(action) {
     workGuideId: '',
     version: 1
   };
-  updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: 7, dataJson: data, updatedAt: nowIso_() });
+  updateAutomaticWorkGuideBuild_(session.buildSessionId, 7, data);
 
   let reviewedValue = null;
   let conversationId = '';
@@ -176,7 +271,7 @@ function automateActionGuide_(action) {
     conversationId = generated.conversationId;
     data.importedWorkGuide = reviewedValue.workGuide;
     data.autoReview = reviewedValue.review;
-    updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: 10, dataJson: data, updatedAt: nowIso_() });
+    updateAutomaticWorkGuideBuild_(session.buildSessionId, 10, data);
   }
   const saved = saveWorkGuide({
     requestToken: 'auto-' + action.actionId + '-initial',
@@ -208,6 +303,7 @@ function requestAiWorkGuideRevision(workGuideId, feedback) {
   return withClientError_(function () {
     assertApp_(nonEmptyString_(feedback), 'VALIDATION_ERROR', '直してほしい点を入力してください。');
     const record = requireWorkGuideRecord_(workGuideId);
+    requirePassedQuizForMeeting_(record.meetingId);
     const loaded = getWorkGuideOrThrow_(workGuideId, Number(record.currentVersion));
     const action = requireAction_(record.actionId);
     const meeting = requireMeeting_(record.meetingId);
@@ -267,6 +363,10 @@ function findGuideForAction_(actionId) {
 function refreshMeetingAutomationStatus_(meetingId) {
   const meeting = findRow_('Meetings', function (row) { return String(row.meetingId) === String(meetingId); });
   if (!meeting || String(meeting.analysisStatus) !== 'completed') return;
+  if (!hasPassedQuizForMeeting_(meetingId)) {
+    updateRow_('Meetings', meeting._rowNumber, { automationStatus: 'quiz_ready', automationError: '', automationUpdatedAt: nowIso_() });
+    return;
+  }
   const required = findRows_('Actions', function (row) { return String(row.meetingId) === String(meetingId) && isActionAutoGuideRequired_(row); });
   const failed = required.some(function (row) { return String(row.automationStatus) === 'failed' && !findGuideForAction_(row.actionId); });
   const pending = required.some(function (row) { return !findGuideForAction_(row.actionId); });

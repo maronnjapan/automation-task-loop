@@ -49,6 +49,7 @@ function markQuizExplanationViewed(quizSessionId, questionId) {
 function submitQuiz(quizSessionId) {
   return withClientError_(function () {
     const session = requireQuizSession_(quizSessionId);
+    assertApp_(String(session.status) !== 'completed', 'QUIZ_COMPLETED', 'このクイズは全問正解済みです。');
     const quiz = getQuizForMeeting_(session.meetingId);
     const answers = parseJsonCell_(session.answersJson, {});
     const unanswered = quiz.questions.filter(function (question) { return !Array.isArray(answers[question.questionId]); });
@@ -56,9 +57,51 @@ function submitQuiz(quizSessionId) {
     const results = quiz.questions.map(function (question) { return scoreQuestion_(question, answers[question.questionId]); });
     const correctCount = results.filter(function (result) { return result.correct; }).length;
     const score = { correctCount: correctCount, total: results.length, percentage: Math.round(correctCount / results.length * 100), results: results };
-    updateRow_('QuizSessions', session._rowNumber, { status: 'completed', scoreJson: score, updatedAt: nowIso_() });
-    return { success: true, score: score, incorrectExplanations: results.filter(function (result) { return !result.correct; }) };
+    const passed = isPassingQuizScore_(score);
+    updateRow_('QuizSessions', session._rowNumber, {
+      status: passed ? 'completed' : 'retry_required',
+      answersJson: passed ? answers : {},
+      questionStatesJson: passed ? parseJsonCell_(session.questionStatesJson, {}) : {},
+      scoreJson: score,
+      updatedAt: nowIso_()
+    });
+    refreshMeetingAutomationStatus_(session.meetingId);
+    return {
+      success: true,
+      passed: passed,
+      canCreateWorkGuides: passed,
+      score: score,
+      incorrectExplanations: results.filter(function (result) { return !result.correct; })
+    };
   });
+}
+
+function isPassingQuizScore_(score) {
+  return Boolean(score && Number(score.total) > 0 && Number(score.correctCount) === Number(score.total));
+}
+
+function isQuizSessionPassed_(session) {
+  return Boolean(session && String(session.status) === 'completed' && isPassingQuizScore_(parseJsonCell_(session.scoreJson, {})));
+}
+
+function passedQuizMeetingIds_() {
+  const passed = {};
+  getRows_('QuizSessions').forEach(function (session) {
+    if (isQuizSessionPassed_(session)) passed[String(session.meetingId)] = true;
+  });
+  return passed;
+}
+
+function hasPassedQuizForMeeting_(meetingId) {
+  return Boolean(passedQuizMeetingIds_()[String(meetingId)]);
+}
+
+function requirePassedQuizForMeeting_(meetingId) {
+  assertApp_(
+    hasPassedQuizForMeeting_(meetingId),
+    'QUIZ_PASS_REQUIRED',
+    'この会議のクイズに全問正解してから作業ガイドを作成してください。'
+  );
 }
 
 function getQuizForMeeting_(meetingId) {

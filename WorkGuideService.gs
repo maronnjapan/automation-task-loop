@@ -10,9 +10,14 @@ function saveWorkGuide(payload) {
     validateWorkGuide_(payload.workGuide || {});
     const action = requireAction_(payload.actionId);
     assertApp_(String(action.meetingId) === String(payload.meetingId), 'ID_MISMATCH', '作業候補と会議IDが一致しません。');
+    requirePassedQuizForMeeting_(action.meetingId);
     if (payload.buildSessionId) {
       const initialBuild = requireBuildSession_(payload.buildSessionId);
       assertApp_(String(initialBuild.actionId) === String(action.actionId), 'ID_MISMATCH', '作成セッションと作業候補が一致しません。');
+      if (payload.generationMode === 'automatic') {
+        const initialBuildData = parseJsonCell_(initialBuild.dataJson, {});
+        assertApp_(initialBuildData.creationMode === 'automatic', 'MANUAL_BUILD_IN_PROGRESS', '手動作成へ切り替えられたため、自動生成したガイドは保存しません。');
+      }
     }
     lock.waitLock(30000);
     requestRow = findRow_('SaveRequests', function (row) { return String(row.requestToken) === String(payload.requestToken); });
@@ -30,6 +35,10 @@ function saveWorkGuide(payload) {
     if (payload.buildSessionId) {
       const lockedBuild = requireBuildSession_(payload.buildSessionId);
       assertApp_(String(lockedBuild.status) !== 'completed' || completed.spreadsheetUpdated, 'BUILD_SESSION_CLOSED', 'この作成セッションは保存済みです。');
+      if (payload.generationMode === 'automatic') {
+        const lockedBuildData = parseJsonCell_(lockedBuild.dataJson, {});
+        assertApp_(lockedBuildData.creationMode === 'automatic', 'MANUAL_BUILD_IN_PROGRESS', '手動作成へ切り替えられたため、自動生成したガイドは保存しません。');
+      }
     }
     if (!requestRow) {
       const guideForId = payload.workGuide || {};
@@ -138,6 +147,7 @@ function approveWorkGuide(workGuideId, reviewNote) {
     lock.waitLock(30000);
     try {
       const record = requireWorkGuideRecord_(workGuideId);
+      requirePassedQuizForMeeting_(record.meetingId);
       assertApp_(String(record.status) === APP_CONFIG.statuses.guideNeedsReview, 'GUIDE_NOT_WAITING_REVIEW', 'この作業ガイドは承認待ちではありません。');
       const documentFile = getFileSafely_(record.documentFileId);
       const jsonFile = getFileSafely_(record.jsonFileId);

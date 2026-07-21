@@ -20,7 +20,8 @@ const App = (function () {
     executionGuide: null,
     saveRequestToken: '',
     automation: null,
-    aiSettings: null
+    aiSettings: null,
+    approvedAnalysisReview: ''
   };
 
   function server(name) {
@@ -84,6 +85,21 @@ const App = (function () {
         applyMeetingDefaults(result.defaults.title, result.defaults.category);
       } catch (error) { showError(error); }
     });
+    document.getElementById('analysis-review').addEventListener('input', function (event) {
+      if (event.target.value.trim() === state.approvedAnalysisReview) return;
+      document.getElementById('analysis-review-confirm').checked = false;
+      document.getElementById('analysis-json-stage').classList.add('hidden');
+      document.getElementById('analysis-json-prompt').value = '';
+    });
+    document.getElementById('guide-plan').addEventListener('input', function () {
+      document.getElementById('guide-plan-confirm').checked = false;
+      document.getElementById('guide-json-prompt-stage').classList.add('hidden');
+      document.getElementById('guide-prompt').value = '';
+      if (state.buildSession && state.buildSession.data) {
+        state.buildSession.data.approvedGuidePlan = '';
+        state.buildSession.data.lastAiPrompt = '';
+      }
+    });
   }
 
   function applyMeetingDefaults(title, category) {
@@ -95,7 +111,8 @@ const App = (function () {
 
   async function showView(name) {
     document.querySelectorAll('.view').forEach(function (view) { view.classList.remove('active'); });
-    document.querySelectorAll('.app-nav button').forEach(function (button) { button.classList.toggle('active', button.dataset.view === name); });
+    const navigationView = name === 'builder' ? 'actions' : name;
+    document.querySelectorAll('.app-nav button').forEach(function (button) { button.classList.toggle('active', button.dataset.view === navigationView); });
     const view = document.getElementById('view-' + name);
     if (view) view.classList.add('active');
     if (!state.bootstrap || !state.bootstrap.configured) return;
@@ -249,10 +266,29 @@ const App = (function () {
       document.getElementById('analysis-workspace').classList.remove('hidden');
       document.getElementById('analysis-meeting-label').textContent = meeting ? meeting.title : meetingId;
       document.getElementById('analysis-prompt').value = result.prompt;
+      document.getElementById('analysis-review').value = '';
+      document.getElementById('analysis-review-confirm').checked = false;
+      document.getElementById('analysis-json-prompt').value = '';
       document.getElementById('analysis-json').value = '';
+      document.getElementById('analysis-json-stage').classList.add('hidden');
+      document.getElementById('analysis-validation').className = 'validation-box hidden';
+      state.approvedAnalysisReview = '';
       document.getElementById('save-analysis-button').disabled = meeting && meeting.analysisStatus === 'completed';
       showView('meetings');
       document.getElementById('analysis-workspace').scrollIntoView({ behavior: 'smooth' });
+    } catch (error) { showError(error); }
+  }
+
+  async function prepareAnalysisJsonPrompt() {
+    try {
+      const reviewedText = document.getElementById('analysis-review').value.trim();
+      const confirmed = document.getElementById('analysis-review-confirm').checked;
+      const result = await call('prepareMeetingAnalysisJsonPrompt', state.selectedMeetingId, reviewedText, confirmed);
+      state.approvedAnalysisReview = result.approvedReview;
+      document.getElementById('analysis-json-prompt').value = result.prompt;
+      document.getElementById('analysis-json-stage').classList.remove('hidden');
+      toast('確認済みの方向性を含むJSON生成プロンプトを作成しました。');
+      document.getElementById('analysis-json-stage').scrollIntoView({ behavior: 'smooth' });
     } catch (error) { showError(error); }
   }
 
@@ -270,7 +306,14 @@ const App = (function () {
     const box = document.getElementById('analysis-validation');
     button.disabled = true;
     try {
-      const result = await call('saveMeetingAnalysis', state.selectedMeetingId, document.getElementById('analysis-json').value);
+      const currentReview = document.getElementById('analysis-review').value.trim();
+      if (!state.approvedAnalysisReview || currentReview !== state.approvedAnalysisReview || !document.getElementById('analysis-review-confirm').checked) {
+        throw new Error('確認案を変更した場合は、もう一度「この方向性でJSON用プロンプトを作る」を押してください。');
+      }
+      const result = await call('saveMeetingAnalysis', state.selectedMeetingId, document.getElementById('analysis-json').value, {
+        approvedReview: state.approvedAnalysisReview,
+        reviewConfirmed: true
+      });
       box.className = 'validation-box success';
       box.innerHTML = '保存しました。作業候補 ' + result.actionCount + '件 / クイズ ' + result.questionCount + '問。 <a href="' + attr(result.summaryFileUrl) + '" target="_blank">会議要約を開く</a>';
       toast('会議解析を保存しました。');
@@ -368,22 +411,40 @@ const App = (function () {
   async function submitCurrentQuiz() {
     try {
       const result = await call('submitQuiz', state.quiz.session.quizSessionId);
-      document.getElementById('quiz-result').innerHTML = '<div class="validation-box success"><strong>' + result.score.correctCount + ' / ' + result.score.total + '問正解（' + result.score.percentage + '%）</strong></div>' + result.incorrectExplanations.map(function (item) { return '<div class="validation-box error"><strong>' + escapeHtml(item.questionId) + '</strong>: ' + escapeHtml(item.explanation) + '</div>'; }).join('');
+      state.quiz.session.status = result.passed ? 'completed' : 'retry_required';
+      state.quiz.session.answers = result.passed ? state.quiz.session.answers : {};
+      state.quiz.session.questionStates = result.passed ? state.quiz.session.questionStates : {};
+      const resultClass = result.passed ? 'success' : 'error';
+      const resultMessage = result.passed ? '全問正解です。作業ガイドを作成できます。' : '全問正解になるまで、もう一度回答してください。';
+      document.getElementById('quiz-result').innerHTML = '<div class="validation-box ' + resultClass + '"><strong>' + result.score.correctCount + ' / ' + result.score.total + '問正解（' + result.score.percentage + '%）</strong><p>' + resultMessage + '</p></div>' + result.incorrectExplanations.map(function (item) { return '<div class="validation-box error"><strong>' + escapeHtml(item.questionId) + '</strong>: ' + escapeHtml(item.explanation) + '</div>'; }).join('') + (result.passed ? '' : '<button onclick="App.retryCurrentQuiz()">もう一度回答する</button>');
       document.getElementById('quiz-questions').innerHTML = '';
+      if (result.passed) toast('クイズに全問正解しました。この会議の作業ガイド作成が可能になりました。');
     } catch (error) { showError(error); }
+  }
+
+  function retryCurrentQuiz() {
+    document.getElementById('quiz-result').innerHTML = '';
+    renderQuiz();
   }
 
   async function loadActions() {
     const result = await call('listActionCandidates', '');
     const actions = result.actions || [];
     document.getElementById('action-list').innerHTML = actions.length ? actions.map(function (action) {
-      return '<article class="item-card"><h3>' + escapeHtml(action.title) + '</h3><p>' + escapeHtml(action.description) + '</p><p class="meta">' + escapeHtml(action.actionId + ' / 状態: ' + action.status) + '</p>' + (action.status === 'guide_ready' ? '<span class="guide-status ready">ガイド保存済み</span>' : action.status === 'guide_review' ? '<span class="guide-status needs_review">ガイド承認待ち</span>' : '<button onclick="App.startBuild(\'' + attr(action.actionId) + '\')">ガイド作成</button>') + '</article>';
+      const guideAction = action.status === 'guide_ready'
+        ? '<span class="guide-status ready">ガイド保存済み</span>'
+        : action.status === 'guide_review'
+          ? '<span class="guide-status needs_review">ガイド承認待ち</span>'
+          : action.quizPassed
+            ? '<button onclick="App.startBuild(\'' + attr(action.actionId) + '\')">' + (action.status === 'guide_building' ? '手動作成を続ける' : 'この候補から手動作成') + '</button>'
+            : '<span class="guide-status needs_review">この会議のクイズ全問正解後に作成できます</span>';
+      return '<article class="item-card"><h3>' + escapeHtml(action.title) + '</h3><p>' + escapeHtml(action.description) + '</p><p class="meta">' + escapeHtml(action.actionId + ' / 状態: ' + action.status) + '</p>' + guideAction + '</article>';
     }).join('') : '作業候補はまだありません';
   }
 
   async function startBuild(actionId) {
     try {
-      const result = await call('startWorkGuideBuild', actionId);
+      const result = await call('startWorkGuideBuild', actionId, 'manual');
       state.buildSession = result.session;
       state.editGuide = result.session.data.importedWorkGuide || null;
       state.saveRequestToken = '';
@@ -406,7 +467,11 @@ const App = (function () {
   }
 
   function resetBuilderForm() {
+    document.getElementById('guide-plan-prompt').value = '';
+    document.getElementById('guide-plan').value = '';
+    document.getElementById('guide-plan-confirm').checked = false;
     document.getElementById('guide-prompt').value = '';
+    document.getElementById('guide-json-prompt-stage').classList.add('hidden');
     document.getElementById('guide-json-import').value = '';
     document.getElementById('review-feedback').value = '';
     document.getElementById('revision-prompt').value = '';
@@ -438,7 +503,38 @@ const App = (function () {
     document.getElementById('prerequisite-questions').innerHTML = (session.data.prerequisiteQuestions || []).map(function (question, index) {
       return '<label>' + escapeHtml(question) + '<textarea rows="2" data-prereq-index="' + index + '">' + escapeHtml((session.data.prerequisiteAnswers || {})[question] || '') + '</textarea></label>';
     }).join('');
+    if (session.data.lastAiPlanPrompt) document.getElementById('guide-plan-prompt').value = session.data.lastAiPlanPrompt;
+    if (session.data.approvedGuidePlan) {
+      document.getElementById('guide-plan').value = session.data.approvedGuidePlan;
+      document.getElementById('guide-plan-confirm').checked = true;
+    }
+    if (session.data.lastAiPrompt) {
+      const promptField = session.data.lastAiPromptPhase === 'work_guide_revision' ? 'revision-prompt' : 'guide-prompt';
+      document.getElementById(promptField).value = session.data.lastAiPrompt;
+      if (session.data.lastAiPromptPhase === 'work_guide_generation') document.getElementById('guide-json-prompt-stage').classList.remove('hidden');
+    }
     if (state.editGuide) { renderDraftPreview(); renderGuideEditor(); }
+  }
+
+  async function prepareGuidePlanPrompt() {
+    try {
+      const selectedIds = Array.from(document.querySelectorAll('[name="source-file"]:checked')).map(function (input) { return input.value; });
+      const prereqs = collectPrerequisiteData();
+      const result = await call('prepareWorkGuidePlanPrompt', state.buildSession.buildSessionId, selectedIds, prereqs.known, prereqs.answers);
+      document.getElementById('guide-plan-prompt').value = result.prompt;
+      document.getElementById('guide-plan').value = '';
+      document.getElementById('guide-plan-confirm').checked = false;
+      document.getElementById('guide-prompt').value = '';
+      document.getElementById('guide-json-prompt-stage').classList.add('hidden');
+      state.buildSession.data.knownPrerequisites = prereqs.known;
+      state.buildSession.data.prerequisiteAnswers = prereqs.answers;
+      state.buildSession.data.selectedSources = result.selectedSources;
+      state.buildSession.data.lastAiPlanPrompt = result.prompt;
+      state.buildSession.data.approvedGuidePlan = '';
+      state.buildSession.data.lastAiPrompt = '';
+      state.buildSession.currentStep = 7;
+      toast('人が読むための作業ガイド設計案プロンプトを作成しました。');
+    } catch (error) { showError(error); }
   }
 
   async function searchSources() {
@@ -466,20 +562,32 @@ const App = (function () {
     try {
       const selectedIds = Array.from(document.querySelectorAll('[name="source-file"]:checked')).map(function (input) { return input.value; });
       const prereqs = collectPrerequisiteData();
-      const result = await call('prepareWorkGuidePrompt', state.buildSession.buildSessionId, selectedIds, prereqs.known, prereqs.answers);
+      const approvedPlan = document.getElementById('guide-plan').value.trim();
+      const confirmed = document.getElementById('guide-plan-confirm').checked;
+      const result = await call('prepareWorkGuidePrompt', state.buildSession.buildSessionId, selectedIds, prereqs.known, prereqs.answers, approvedPlan, confirmed);
       document.getElementById('guide-prompt').value = result.prompt;
+      document.getElementById('guide-json-prompt-stage').classList.remove('hidden');
       state.buildSession.data.knownPrerequisites = prereqs.known;
       state.buildSession.data.prerequisiteAnswers = prereqs.answers;
       state.buildSession.data.selectedSources = result.selectedSources;
+      state.buildSession.data.approvedGuidePlan = approvedPlan;
+      state.buildSession.data.lastAiPrompt = result.prompt;
+      state.buildSession.data.lastAiPromptPhase = 'work_guide_generation';
       state.buildSession.currentStep = 7;
       renderBuilder();
-      toast('AI投入用コンテキストを作成しました。');
+      toast('確認済みの設計案を含むJSON生成プロンプトを作成しました。');
     } catch (error) { showError(error); }
   }
 
   async function importGuide() {
     const box = document.getElementById('guide-import-validation');
     try {
+      if (!state.buildSession.data.revisionWorkGuideId) {
+        const currentPlan = document.getElementById('guide-plan').value.trim();
+        if (!state.buildSession.data.approvedGuidePlan || currentPlan !== state.buildSession.data.approvedGuidePlan || !document.getElementById('guide-plan-confirm').checked) {
+          throw new Error('作業ガイド設計案を変更した場合は、もう一度JSON生成プロンプトを作成してください。');
+        }
+      }
       const result = await call('importWorkGuideToBuild', state.buildSession.buildSessionId, document.getElementById('guide-json-import').value);
       state.editGuide = result.workGuide;
       state.saveRequestToken = '';
@@ -945,17 +1053,22 @@ const App = (function () {
 
   function renderAiSettings() {
     const settings = state.aiSettings || {};
+    const providerOptions = settings.providerOptions || [];
+    document.getElementById('ai-provider').innerHTML = providerOptions.map(function (option) {
+      return '<option value="' + attr(option.value) + '"' + (option.value === settings.provider ? ' selected' : '') + '>' + escapeHtml(option.label) + '</option>';
+    }).join('');
     document.getElementById('ai-api-key').value = '';
-    document.getElementById('ai-model').value = settings.model || 'gpt-5.6-terra';
+    document.getElementById('ai-model').value = settings.model || '';
     document.getElementById('ai-repair-attempts').value = String(settings.maxRepairAttempts === undefined ? 1 : settings.maxRepairAttempts);
     document.getElementById('ai-data-consent').checked = Boolean(settings.dataConsent);
     document.getElementById('ai-auto-enabled').checked = Boolean(settings.requestedAutoProcessingEnabled);
-    document.getElementById('ai-settings-status').innerHTML = (settings.apiKeyConfigured ? '<span class="guide-status ready">APIキー設定済み</span>' : '<span class="guide-status needs_review">APIキー未設定</span>') + ' / ' + (settings.autoProcessingEnabled ? '全自動処理は有効です。' : '全自動処理は停止中です。');
+    document.getElementById('ai-settings-status').innerHTML = (settings.apiKeyConfigured ? '<span class="guide-status ready">APIキー設定済み</span>' : '<span class="guide-status needs_review">APIキー未設定</span>') + ' / ' + (settings.autoProcessingEnabled ? '全自動処理は有効です。' : '全自動処理は停止中です。') + ' / 現在のプロバイダー: ' + escapeHtml(settings.providerLabel || settings.provider || '');
   }
 
   async function saveAiSettings() {
     try {
       const result = await call('saveAiAutomationSettings', {
+        provider: document.getElementById('ai-provider').value,
         apiKey: document.getElementById('ai-api-key').value.trim(),
         model: document.getElementById('ai-model').value.trim(),
         maxRepairAttempts: Number(document.getElementById('ai-repair-attempts').value),
@@ -1010,21 +1123,11 @@ const App = (function () {
 
   async function copyText(id) {
     const field = document.getElementById(id);
+    if (!field || !field.value.trim()) return showError(new Error('先にプロンプトを作成してください。'));
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(field.value);
       else { field.select(); document.execCommand('copy'); }
       toast('クリップボードへコピーしました。');
-    } catch (error) { showError(new Error('コピーできませんでした。テキストを選択して手動でコピーしてください。')); }
-  }
-
-  async function copyPromptToChatGpt(id) {
-    const field = document.getElementById(id);
-    if (!field.value.trim()) return showError(new Error('先にプロンプトを作成してください。'));
-    const chatWindow = window.open('https://chatgpt.com/', '_blank');
-    try {
-      if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(field.value);
-      else { field.select(); document.execCommand('copy'); }
-      toast(chatWindow ? 'プロンプトをコピーしました。ChatGPT のタブへ貼り付けてください。' : 'プロンプトをコピーしました。ポップアップがブロックされたため、chatgpt.com を手動で開いてください。');
     } catch (error) { showError(new Error('コピーできませんでした。テキストを選択して手動でコピーしてください。')); }
   }
 
@@ -1045,16 +1148,16 @@ const App = (function () {
   return {
     init: init, showView: showView, refreshDashboard: refreshDashboard, runInitialSetup: runInitialSetup, loadMeetings: loadMeetings, registerMeeting: registerMeeting,
     loadTranscriptWorkflows: loadTranscriptWorkflows, selectTranscript: selectTranscript, completeTranscript: completeTranscript, reopenTranscript: reopenTranscript,
-    selectMeeting: selectMeeting, validateAnalysis: validateAnalysis, saveAnalysis: saveAnalysis, openQuiz: openQuiz,
-    answerSingle: answerSingle, continueSingle: continueSingle, submitBatchQuiz: submitBatchQuiz, submitCurrentQuiz: submitCurrentQuiz,
-    loadActions: loadActions, startBuild: startBuild, reviseGuide: reviseGuide, searchSources: searchSources, prepareGuidePrompt: prepareGuidePrompt,
+    selectMeeting: selectMeeting, prepareAnalysisJsonPrompt: prepareAnalysisJsonPrompt, validateAnalysis: validateAnalysis, saveAnalysis: saveAnalysis, openQuiz: openQuiz,
+    answerSingle: answerSingle, continueSingle: continueSingle, submitBatchQuiz: submitBatchQuiz, submitCurrentQuiz: submitCurrentQuiz, retryCurrentQuiz: retryCurrentQuiz,
+    loadActions: loadActions, startBuild: startBuild, reviseGuide: reviseGuide, searchSources: searchSources, prepareGuidePlanPrompt: prepareGuidePlanPrompt, prepareGuidePrompt: prepareGuidePrompt,
     importGuide: importGuide, prepareRevisionPrompt: prepareRevisionPrompt, addGuideStep: addGuideStep, deleteGuideStep: deleteGuideStep, moveGuideStep: moveGuideStep,
     duplicateGuideStep: duplicateGuideStep, saveBuildDraft: saveBuildDraft, saveGuide: saveGuide, loadGuides: loadGuides,
     openGuideDetail: openGuideDetail, approveSelectedGuide: approveSelectedGuide, requestSelectedGuideRevision: requestSelectedGuideRevision, backToGuideList: backToGuideList, startExecution: startExecution, loadExecutions: loadExecutions, openExecution: openExecution,
     saveCurrentStep: saveCurrentStep, pauseExecution: pauseExecution, resumeExecution: resumeExecution, completeExecution: completeExecution,
     runDiagnostics: runDiagnostics, loadAllowedActions: loadAllowedActions, registerAction: registerAction, unregisterAction: unregisterAction,
     loadAutomationPanel: loadAutomationPanel, toggleAutoRegister: toggleAutoRegister, runAutoRegisterNow: runAutoRegisterNow, loadAutomationCandidates: loadAutomationCandidates, saveAiSettings: saveAiSettings, testAiConnection: testAiConnection,
-    copyText: copyText, copyPromptToChatGpt: copyPromptToChatGpt
+    copyText: copyText
   };
 })();
 

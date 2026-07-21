@@ -1,5 +1,5 @@
 <section id="view-actions" class="view">
-  <div class="page-heading"><div><p class="eyebrow">PHASE 3</p><h2>作業候補</h2></div><button class="secondary" onclick="App.loadActions()">一覧更新</button></div>
-  <div class="notice info">必要な候補だけ「ガイド作成」を選びます。選ばなかった候補は削除せず残ります。</div>
+  <div class="page-heading"><div><p class="eyebrow">MANUAL GUIDE CREATION</p><h2>手動で作業ガイドを作成</h2></div><div class="button-row"><button class="secondary" onclick="App.showView('guides')">← 作業一覧へ戻る</button><button class="secondary" onclick="App.loadActions()">一覧更新</button></div></div>
+  <div class="notice info"><strong>生成AI APIを使わずに作成できます。</strong><br>候補を選ぶと、前提条件と参照資料をまとめたプロンプトを作成します。好きな生成AIへコピーして対話し、回答JSONを貼り付けて仕上げます。</div>
   <div id="action-list" class="card-grid empty">作業候補はまだありません</div>
 </section>
