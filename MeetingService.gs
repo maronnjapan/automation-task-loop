@@ -16,7 +16,8 @@ function registerMeeting(input) {
       meetingId: createId_('MTG'), title: title, category: category,
       transcriptFileId: file.getId(),
       meetingEndedAt: nonEmptyString_(input.meetingEndedAt) ? new Date(input.meetingEndedAt).toISOString() : nowIso_(),
-      registeredAt: nowIso_(), analysisStatus: 'pending', workflowStatus: 'active', completedAt: ''
+      registeredAt: nowIso_(), analysisStatus: 'pending', workflowStatus: 'active', completedAt: '',
+      automationStatus: 'pending', automationAttempts: 0, automationError: '', automationUpdatedAt: nowIso_()
     };
     appendObject_('Meetings', meeting);
     return { success: true, meeting: meeting };

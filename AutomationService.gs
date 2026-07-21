@@ -1,10 +1,9 @@
 /**
- * GAS内で完結する自動化機能。生成AIのAPIは一切使用しない。
- * 1. 時間主導トリガーによる文字起こしの自動会議登録
- * 2. 繰り返し手動手順の検出(登録スクリプト化候補の提示)
+ * 時間主導トリガーによる文字起こし登録と、任意の生成AI自動処理。
+ * API未設定時は従来どおり登録だけを行い、手動フローへ引き継ぐ。
  */
 const AUTO_REGISTER_HANDLER = 'autoRegisterNewTranscripts';
-const AUTO_REGISTER_INTERVAL_MINUTES = 30;
+const AUTO_REGISTER_INTERVAL_MINUTES = 5;
 const AUTO_REGISTER_LAST_RUN_KEY = 'AUTO_REGISTER_LAST_RUN';
 
 function getAutomationStatus() {
@@ -14,7 +13,8 @@ function getAutomationStatus() {
       success: true,
       autoRegisterEnabled: findAutoRegisterTriggers_().length > 0,
       intervalMinutes: AUTO_REGISTER_INTERVAL_MINUTES,
-      lastRun: lastRun
+      lastRun: lastRun,
+      aiAutomation: getAiAutomationSettings_()
     };
   });
 }
@@ -38,20 +38,30 @@ function findAutoRegisterTriggers_() {
   });
 }
 
+function refreshAutoRegisterTriggerSchedule_() {
+  const existing = findAutoRegisterTriggers_();
+  if (!existing.length) return false;
+  ScriptApp.newTrigger(AUTO_REGISTER_HANDLER).timeBased().everyMinutes(AUTO_REGISTER_INTERVAL_MINUTES).create();
+  existing.forEach(function (trigger) { ScriptApp.deleteTrigger(trigger); });
+  return true;
+}
+
 /**
  * トリガー本体。01_文字起こし配下(完了フォルダを除く)の未登録ファイルを
  * 会議として登録する。タイトルはファイル名、カテゴリーは格納フォルダから
  * 自動判定される(手動登録と同じ規則)。管理画面の「今すぐ実行」からも呼ばれる。
  */
-function autoRegisterNewTranscripts() {
+function autoRegisterNewTranscripts(forceRetry) {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(10000)) return { success: false, error: '別の処理が実行中のため自動登録をスキップしました。' };
+  const summary = { ranAt: nowIso_(), registered: [], skipped: [], analyzedMeetings: [], generatedGuides: [], automationFailures: [], automationPending: [] };
   try {
-    const summary = { ranAt: nowIso_(), registered: [], skipped: [] };
     const settings = getAppSettings();
     if (!settings.rootFolderId || !settings.spreadsheetId) {
       summary.skipped.push({ name: '(全体)', reason: '初期設定が未完了のため何も行いませんでした。' });
     } else {
+      ensureManagementSchemaCurrent_();
+      ensureFolderPath_(getRootFolder_(), APP_CONFIG.folderPaths.aiInteractionLogs);
       const listed = listTranscriptFiles();
       const files = listed.success ? listed.files : [];
       files.forEach(function (file) {
@@ -63,16 +73,21 @@ function autoRegisterNewTranscripts() {
         }
       });
     }
-    PropertiesService.getScriptProperties().setProperty(AUTO_REGISTER_LAST_RUN_KEY, JSON.stringify(summary));
-    return { success: true, summary: summary };
   } finally {
     lock.releaseLock();
   }
+  try {
+    processPendingAiAutomation_(summary, forceRetry === true);
+  } catch (error) {
+    summary.automationFailures.push({ phase: 'automation_queue', error: error.message || String(error) });
+  }
+  PropertiesService.getScriptProperties().setProperty(AUTO_REGISTER_LAST_RUN_KEY, JSON.stringify(summary));
+  return { success: true, summary: summary };
 }
 
 function runAutoRegisterNow() {
   return withClientError_(function () {
-    const result = autoRegisterNewTranscripts();
+    const result = autoRegisterNewTranscripts(true);
     assertApp_(result.success, 'AUTO_REGISTER_BUSY', result.error || '自動登録を実行できませんでした。');
     return result;
   });

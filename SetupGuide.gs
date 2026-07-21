@@ -37,6 +37,8 @@ function runSetupGuide() {
       properties.setProperty(APP_CONFIG.propertyKeys.spreadsheetId, spreadsheet.getId());
     }
     ensureManagementSheets_(spreadsheet);
+    properties.setProperty(APP_CONFIG.propertyKeys.managementSchemaVersion, APP_CONFIG.managementSchemaVersion);
+    refreshAutoRegisterTriggerSchedule_();
     properties.setProperty(APP_CONFIG.propertyKeys.setupCompletedAt, nowIso_());
 
     const diagnostics = runSetupDiagnostics();
@@ -57,6 +59,14 @@ function runSetupGuide() {
   } finally {
     lock.releaseLock();
   }
+}
+
+function ensureManagementSchemaCurrent_() {
+  const properties = PropertiesService.getScriptProperties();
+  if (properties.getProperty(APP_CONFIG.propertyKeys.managementSchemaVersion) === APP_CONFIG.managementSchemaVersion) return false;
+  ensureManagementSheets_(getManagementSpreadsheet_());
+  properties.setProperty(APP_CONFIG.propertyKeys.managementSchemaVersion, APP_CONFIG.managementSchemaVersion);
+  return true;
 }
 
 function ensureManagementSheets_(spreadsheet) {

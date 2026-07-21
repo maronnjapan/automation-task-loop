@@ -23,6 +23,7 @@ function validateMeetingAnalysis_(analysis) {
       else {
         if (!nonEmptyString_(action.title)) errors.push('actionCandidates[' + index + '].title は必須です。');
         if (!nonEmptyString_(action.description)) errors.push('actionCandidates[' + index + '].description は必須です。');
+        if (action.guideRecommended !== undefined && typeof action.guideRecommended !== 'boolean') errors.push('actionCandidates[' + index + '].guideRecommended は真偽値です。');
         if (action.prerequisiteQuestions !== undefined && !isStringArray_(action.prerequisiteQuestions)) {
           errors.push('actionCandidates[' + index + '].prerequisiteQuestions は文字列の配列です。');
         }
@@ -33,6 +34,26 @@ function validateMeetingAnalysis_(analysis) {
   else errors.push.apply(errors, validateQuiz_(analysis.quiz));
   throwValidationErrors_(errors, '会議解析 JSON');
   return analysis;
+}
+
+function validateAutoReviewResult_(result, expectedGuide) {
+  const errors = [];
+  if (!isPlainObject_(result)) errors.push('ルートは JSON オブジェクトです。');
+  if (!isPlainObject_(result && result.review)) errors.push('review は必須のオブジェクトです。');
+  else {
+    if (!nonEmptyString_(result.review.summary)) errors.push('review.summary は必須です。');
+    ['issues', 'changesMade', 'remainingRisks'].forEach(function (field) {
+      if (!isStringArray_(result.review[field])) errors.push('review.' + field + ' は文字列の配列です。');
+    });
+  }
+  if (!isPlainObject_(result && result.workGuide)) errors.push('workGuide は必須のオブジェクトです。');
+  throwValidationErrors_(errors, 'AI自動検収 JSON');
+  result.workGuide.workGuideId = expectedGuide.workGuideId || '';
+  result.workGuide.version = Number(expectedGuide.version || 1);
+  result.workGuide.schemaVersion = APP_CONFIG.schemaVersion;
+  result.workGuide.sourceSnapshots = JSON.parse(JSON.stringify(expectedGuide.sourceSnapshots || []));
+  validateWorkGuide_(result.workGuide);
+  return result;
 }
 
 function validateQuiz_(quiz) {

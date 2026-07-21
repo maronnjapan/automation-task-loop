@@ -38,11 +38,14 @@ function listTranscriptWorkflows() {
         entry.meetingTitle = meeting.title;
         entry.category = meeting.category;
         entry.analysisStatus = meeting.analysisStatus;
+        entry.automationStatus = meeting.automationStatus || '';
+        entry.automationError = meeting.automationError || '';
         entry.completedAt = meeting.completedAt || '';
         if (String(meeting.workflowStatus) === 'completed') entry.completed = true;
         entry.quizCompleted = quizSessions.some(function (row) { return String(row.meetingId) === String(meeting.meetingId) && String(row.status) === 'completed'; });
         entry.candidateActionCount = actions.filter(function (row) { return String(row.meetingId) === String(meeting.meetingId) && String(row.status) === 'candidate'; }).length;
         entry.guideCount = guides.filter(function (row) { return String(row.meetingId) === String(meeting.meetingId); }).length;
+        entry.guideNeedsReviewCount = guides.filter(function (row) { return String(row.meetingId) === String(meeting.meetingId) && String(row.status) === APP_CONFIG.statuses.guideNeedsReview; }).length;
       }
       const stage = transcriptStage_(entry);
       entry.stage = stage.stage;
@@ -57,7 +60,7 @@ function transcriptStage_(entry) {
   if (entry.completed) return { stage: 'completed', label: '完了' };
   if (!entry.meetingId) return { stage: 'register', label: '未登録' };
   if (String(entry.analysisStatus) !== 'completed') return { stage: 'analysis', label: '解析待ち' };
-  if (!entry.quizCompleted) return { stage: 'quiz', label: 'クイズ未回答' };
+  if (!entry.quizCompleted) return { stage: 'quiz', label: entry.guideNeedsReviewCount ? 'クイズ未回答・ガイド承認待ち' : 'クイズ未回答' };
   return { stage: 'guide', label: 'ガイド作成・実行' };
 }
 

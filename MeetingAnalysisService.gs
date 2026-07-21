@@ -1,5 +1,6 @@
-function saveMeetingAnalysis(meetingId, rawText) {
+function saveMeetingAnalysis(meetingId, rawText, options) {
   return withClientError_(function () {
+    options = options || {};
     const analysis = validateMeetingAnalysis_(parsePastedJson_(rawText));
     const lock = LockService.getScriptLock();
     lock.waitLock(30000);
@@ -19,10 +20,16 @@ function saveMeetingAnalysis(meetingId, rawText) {
         appendObject_('Actions', {
           actionId: createId_('ACT'), meetingId: meeting.meetingId, title: candidate.title,
           description: candidate.description, owner: candidate.owner || '', dueDate: candidate.dueDate || '', status: 'candidate',
-          prerequisiteQuestionsJson: candidate.prerequisiteQuestions || defaultPrerequisiteQuestions_(), createdAt: analyzedAt
+          prerequisiteQuestionsJson: candidate.prerequisiteQuestions || defaultPrerequisiteQuestions_(), createdAt: analyzedAt,
+          guideRecommended: candidate.guideRecommended !== false, automationStatus: candidate.guideRecommended === false ? 'not_required' : 'pending',
+          automationAttempts: 0, automationError: ''
         });
       });
-      updateRow_('Meetings', meeting._rowNumber, { analysisStatus: 'completed' });
+      updateRow_('Meetings', meeting._rowNumber, { analysisStatus: 'completed', automationStatus: 'analysis_completed', automationError: '', automationUpdatedAt: nowIso_() });
+      if (options.skipInteractionLog !== true) {
+        const transcript = readTextFile_(meeting.transcriptFileId, APP_CONFIG.maxTranscriptCharacters);
+        recordManualAiInteraction_({ meetingId: meeting.meetingId, phase: 'meeting_analysis' }, buildMeetingAnalysisPrompt_(meeting, transcript), rawText, { valid: true, errors: [] });
+      }
       return {
         success: true, meetingId: meeting.meetingId, summaryFileId: summaryFile.getId(), summaryFileUrl: summaryFile.getUrl(),
         analysisJsonFileId: jsonFile.getId(), actionCount: analysis.actionCandidates.length, questionCount: analysis.quiz.questions.length

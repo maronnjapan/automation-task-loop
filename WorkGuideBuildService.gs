@@ -90,8 +90,10 @@ function prepareWorkGuidePrompt(buildSessionId, fileIds, knownPrerequisites, pre
       workGuideId: data.revisionWorkGuideId || '',
       version: data.revisionWorkGuideId ? Number(requireWorkGuideRecord_(data.revisionWorkGuideId).currentVersion) + 1 : 1
     };
+    data.lastAiPrompt = buildWorkGuidePrompt_(context);
+    data.lastAiPromptPhase = 'work_guide_generation';
     updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: 7, dataJson: data, updatedAt: nowIso_() });
-    return { success: true, prompt: buildWorkGuidePrompt_(context), selectedSources: data.selectedSources };
+    return { success: true, prompt: data.lastAiPrompt, selectedSources: data.selectedSources };
   });
 }
 
@@ -105,6 +107,11 @@ function importWorkGuideToBuild(buildSessionId, rawText) {
     if (!guide.sourceSnapshots || !guide.sourceSnapshots.length) guide.sourceSnapshots = data.selectedSources || [];
     validateWorkGuide_(guide);
     data.importedWorkGuide = guide;
+    if (nonEmptyString_(data.lastAiPrompt)) {
+      recordManualAiInteraction_({ meetingId: session.meetingId, actionId: session.actionId, buildSessionId: session.buildSessionId, phase: data.lastAiPromptPhase || 'work_guide_generation' }, data.lastAiPrompt, rawText, { valid: true, errors: [] });
+      data.lastAiPrompt = '';
+      data.lastAiPromptPhase = '';
+    }
     updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: 9, dataJson: data, updatedAt: nowIso_() });
     return { success: true, workGuide: guide };
   });
@@ -117,8 +124,10 @@ function prepareWorkGuideRevisionPrompt(buildSessionId, feedback) {
     assertApp_(isPlainObject_(data.importedWorkGuide), 'DRAFT_NOT_FOUND', '先に STEP 8 で作業ガイドJSONを取り込んでください。');
     assertApp_(nonEmptyString_(feedback), 'VALIDATION_ERROR', 'レビュー指摘を入力してください。');
     data.reviewFeedbacks = (Array.isArray(data.reviewFeedbacks) ? data.reviewFeedbacks : []).concat([{ feedback: feedback.trim(), createdAt: nowIso_() }]);
+    data.lastAiPrompt = buildWorkGuideRevisionPrompt_(data.importedWorkGuide, feedback.trim());
+    data.lastAiPromptPhase = 'work_guide_revision';
     updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: 9, dataJson: data, updatedAt: nowIso_() });
-    return { success: true, prompt: buildWorkGuideRevisionPrompt_(data.importedWorkGuide, feedback.trim()) };
+    return { success: true, prompt: data.lastAiPrompt };
   });
 }
 

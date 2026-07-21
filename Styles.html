@@ -47,6 +47,7 @@
   .metric strong { display: block; color: var(--primary); font-size: 2rem; }
   .card-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .item-card { padding: 1rem; border: 1px solid var(--line); border-radius: 14px; background: #fff; }
+  .item-card.awaiting-review { border-color: #f2a93b; box-shadow: 0 0 0 3px rgba(242,169,59,.12); }
   .item-card h3, .item-card h4 { margin: 0 0 .5rem; }
   .item-card p { margin: .3rem 0; }
   .item-card .button-row { margin-top: .75rem; }
@@ -108,6 +109,13 @@
   .action-open:hover { background: var(--primary-dark); }
   .action-url { margin-top: .5rem; font-size: .78rem; color: var(--muted); word-break: break-all; }
   .completion-note { margin: .9rem 0 0; padding: .75rem .9rem; border-radius: 10px; background: var(--primary-soft); color: var(--primary-dark); }
+  .guide-status { display: inline-block; padding: .2rem .55rem; border-radius: 999px; color: #344054; background: #eef2f6; font-size: .75rem; font-weight: 800; }
+  .guide-status.ready { color: #05603a; background: #dcfae6; }
+  .guide-status.needs_review { color: #7a2e0e; background: #fef0c7; }
+  .interaction-list { display: grid; gap: .65rem; margin-top: .8rem; }
+  .interaction-item { padding: .75rem .85rem; border: 1px solid var(--line); border-radius: 10px; background: #f9fbfc; }
+  .interaction-item summary { cursor: pointer; }
+  .interaction-item p { overflow-wrap: anywhere; }
   #toast { position: fixed; z-index: 100; right: 1rem; bottom: 1rem; max-width: min(420px, calc(100vw - 2rem)); padding: .8rem 1rem; border-radius: 10px; color: #fff; background: #101828; box-shadow: var(--shadow); opacity: 0; pointer-events: none; transform: translateY(10px); transition: .2s; }
   #toast.show { opacity: 1; transform: translateY(0); }
   #toast.error { background: var(--danger); }

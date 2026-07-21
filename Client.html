@@ -19,7 +19,8 @@ const App = (function () {
     execution: null,
     executionGuide: null,
     saveRequestToken: '',
-    automation: null
+    automation: null,
+    aiSettings: null
   };
 
   function server(name) {
@@ -129,8 +130,8 @@ const App = (function () {
   }
 
   function renderDashboard() {
-    const counts = state.bootstrap && state.bootstrap.counts ? state.bootstrap.counts : { meetings: 0, actions: 0, guides: 0, activeExecutions: 0 };
-    const labels = [['meetings', '登録会議'], ['actions', '未選択の作業候補'], ['guides', '作業ガイド'], ['activeExecutions', '進行中・中断中']];
+    const counts = state.bootstrap && state.bootstrap.counts ? state.bootstrap.counts : { meetings: 0, actions: 0, guides: 0, guidesAwaitingReview: 0, activeExecutions: 0 };
+    const labels = [['meetings', '登録会議'], ['guidesAwaitingReview', 'ガイド承認待ち'], ['guides', '作業ガイド'], ['activeExecutions', '進行中・中断中']];
     document.getElementById('dashboard-counts').innerHTML = labels.map(function (item) {
       return '<div class="metric"><span>' + item[1] + '</span><strong>' + escapeHtml(counts[item[0]]) + '</strong></div>';
     }).join('');
@@ -150,7 +151,9 @@ const App = (function () {
       const meta = [entry.stageLabel]
         .concat(entry.meetingTitle ? ['会議: ' + entry.meetingTitle] : [])
         .concat(entry.location ? ['フォルダ: ' + entry.location] : [])
-        .concat(entry.stage === 'guide' ? ['未選択の候補 ' + entry.candidateActionCount + '件 / ガイド ' + entry.guideCount + '件'] : []);
+        .concat(entry.guideCount !== undefined ? ['ガイド ' + entry.guideCount + '件 / 承認待ち ' + (entry.guideNeedsReviewCount || 0) + '件'] : [])
+        .concat(entry.automationStatus ? ['自動処理: ' + entry.automationStatus] : [])
+        .concat(entry.automationError ? ['エラー: ' + entry.automationError] : []);
       return '<div class="list-row"><div><strong><a target="_blank" href="' + attr(entry.url) + '">' + escapeHtml(entry.name) + '</a></strong><div class="meta">' + escapeHtml(meta.join(' / ')) + '</div></div><div class="button-row"><button onclick="App.selectTranscript(\'' + attr(entry.fileId) + '\')">' + escapeHtml(transcriptNextLabel(entry)) + '</button><button class="secondary" onclick="App.completeTranscript(\'' + attr(entry.fileId) + '\')">完了にする</button></div></div>';
     }).join('') : '未完了の文字起こしはありません。';
     document.getElementById('transcript-done-wrap').classList.toggle('hidden', !done.length);
@@ -163,7 +166,7 @@ const App = (function () {
     if (entry.stage === 'register') return '会議として登録';
     if (entry.stage === 'analysis') return '解析へ進む';
     if (entry.stage === 'quiz') return 'クイズへ進む';
-    return '作業候補を見る';
+    return entry.guideNeedsReviewCount ? '承認待ちガイドを見る' : '作業ガイドを見る';
   }
 
   async function selectTranscript(fileId) {
@@ -185,7 +188,7 @@ const App = (function () {
         document.getElementById('quiz-meeting-select').value = entry.meetingId;
         toast('回答方式を選んでクイズを開始してください。');
       } else {
-        await showView('actions');
+        await showView('guides');
       }
     } catch (error) { showError(error); }
   }
@@ -290,6 +293,7 @@ const App = (function () {
       if (!meetingId) throw new Error('解析済み会議を選択してください。');
       state.quiz = await call('openQuiz', meetingId, document.getElementById('quiz-mode').value);
       renderQuiz();
+      await loadInteractionHistory({ meetingId: meetingId }, 'quiz-ai-history');
     } catch (error) { showError(error); }
   }
 
@@ -373,7 +377,7 @@ const App = (function () {
     const result = await call('listActionCandidates', '');
     const actions = result.actions || [];
     document.getElementById('action-list').innerHTML = actions.length ? actions.map(function (action) {
-      return '<article class="item-card"><h3>' + escapeHtml(action.title) + '</h3><p>' + escapeHtml(action.description) + '</p><p class="meta">' + escapeHtml(action.actionId + ' / 状態: ' + action.status) + '</p>' + (action.status === 'guide_ready' ? '<span class="status-pill">ガイド保存済み</span>' : '<button onclick="App.startBuild(\'' + attr(action.actionId) + '\')">ガイド作成</button>') + '</article>';
+      return '<article class="item-card"><h3>' + escapeHtml(action.title) + '</h3><p>' + escapeHtml(action.description) + '</p><p class="meta">' + escapeHtml(action.actionId + ' / 状態: ' + action.status) + '</p>' + (action.status === 'guide_ready' ? '<span class="guide-status ready">ガイド保存済み</span>' : action.status === 'guide_review' ? '<span class="guide-status needs_review">ガイド承認待ち</span>' : '<button onclick="App.startBuild(\'' + attr(action.actionId) + '\')">ガイド作成</button>') + '</article>';
     }).join('') : '作業候補はまだありません';
   }
 
@@ -632,34 +636,99 @@ const App = (function () {
   }
 
   function statusLabel(status) {
-    return ({ in_progress: '進行中', paused: '中断中', completed: '完了' })[status] || status;
+    return ({ in_progress: '進行中', paused: '中断中', completed: '完了', ready: '実行可能', needs_review: '承認待ち', draft: '下書き' })[status] || status;
   }
 
   async function loadGuides() {
     showGuideScreen('list');
     const result = await call('listWorkGuides');
-    state.guides = result.workGuides || [];
+    state.guides = (result.workGuides || []).sort(function (a, b) {
+      return (a.status === 'needs_review' ? 0 : 1) - (b.status === 'needs_review' ? 0 : 1);
+    });
     document.getElementById('guide-list').innerHTML = state.guides.length ? state.guides.map(function (guide) {
-      return '<article class="item-card"><h3>' + escapeHtml(guide.title) + '</h3><p class="meta">' + escapeHtml(guide.workGuideId + ' / v' + guide.currentVersion) + '</p><div class="button-row"><button onclick="App.openGuideDetail(\'' + attr(guide.workGuideId) + '\',' + Number(guide.currentVersion) + ')">詳細を開く</button></div></article>';
+      const review = guide.autoReview || {};
+      return '<article class="item-card ' + (guide.status === 'needs_review' ? 'awaiting-review' : '') + '"><div class="button-row"><span class="guide-status ' + attr(guide.status) + '">' + escapeHtml(statusLabel(guide.status)) + '</span></div><h3>' + escapeHtml(guide.title) + '</h3><p class="meta">' + escapeHtml(guide.workGuideId + ' / v' + guide.currentVersion) + '</p>' + (review.summary ? '<p>' + escapeHtml(review.summary) + '</p>' : '') + '<div class="button-row"><button onclick="App.openGuideDetail(\'' + attr(guide.workGuideId) + '\',' + Number(guide.currentVersion) + ')">' + (guide.status === 'needs_review' ? '内容を確認する' : '詳細を開く') + '</button></div></article>';
     }).join('') : '作業ガイドはまだありません';
     await loadExecutions();
   }
 
   async function openGuideDetail(workGuideId, versionNo) {
     const guide = (state.guides || []).find(function (item) { return String(item.workGuideId) === String(workGuideId); });
-    state.selectedGuide = { workGuideId: workGuideId, versionNo: versionNo };
+    state.selectedGuide = { workGuideId: workGuideId, versionNo: versionNo, record: guide || null, workGuide: null };
     document.getElementById('guide-detail-title').textContent = guide ? guide.title : '作業詳細';
-    document.getElementById('guide-detail-panel').innerHTML = guide
-      ? '<h3>' + escapeHtml(guide.title) + '</h3><p class="meta">' + escapeHtml(guide.workGuideId + ' / v' + guide.currentVersion + (guide.lastExecutedAt ? ' / 最終実行 ' + guide.lastExecutedAt : '')) + '</p><p><a target="_blank" href="https://drive.google.com/open?id=' + attr(guide.documentFileId) + '">ドキュメント</a> / <a target="_blank" href="https://drive.google.com/open?id=' + attr(guide.jsonFileId) + '">JSON</a></p><div class="button-row"><button class="secondary" onclick="App.reviseGuide(\'' + attr(guide.workGuideId) + '\')">新バージョン編集</button></div>'
-      : '<p class="empty">作業ガイド情報を取得できませんでした。一覧を更新してください。</p>';
+    document.getElementById('guide-detail-panel').innerHTML = '<p class="empty">作業ガイドを読込中...</p>';
+    document.getElementById('guide-ai-history').innerHTML = '<p class="empty">AI対話履歴を読込中...</p>';
+    document.getElementById('guide-review-actions').classList.toggle('hidden', !guide || guide.status !== 'needs_review');
+    document.getElementById('guide-ai-feedback').value = '';
     document.getElementById('preflight-panel').classList.add('hidden');
     document.getElementById('preflight-result').innerHTML = '';
     document.getElementById('guide-detail-execution-list').innerHTML = '<p class="empty">読込中...</p>';
     showGuideScreen('detail');
     try {
-      await runPreflight(workGuideId, versionNo);
+      const details = await Promise.all([call('getWorkGuide', workGuideId, versionNo), call('listAiInteractions', { workGuideId: workGuideId })]);
+      state.selectedGuide.workGuide = details[0].workGuide;
+      state.selectedGuide.record = details[0].record || guide;
+      renderGuideDetail(details[0].workGuide, state.selectedGuide.record);
+      renderInteractionHistory(details[1].interactions || [], 'guide-ai-history');
+      if (state.selectedGuide.record.status === 'ready') await runPreflight(workGuideId, versionNo);
       await loadGuideExecutions(workGuideId);
     } catch (error) { showError(error); }
+  }
+
+  function renderGuideDetail(workGuide, record) {
+    const list = function (title, items) {
+      return '<h4>' + escapeHtml(title) + '</h4>' + ((items || []).length ? '<ul>' + items.map(function (item) { return '<li>' + escapeHtml(item) + '</li>'; }).join('') + '</ul>' : '<p class="muted">なし</p>');
+    };
+    const steps = (workGuide.steps || []).slice().sort(function (a, b) { return a.order - b.order; }).map(function (step) {
+      return '<div class="question"><h4>' + step.order + '. ' + escapeHtml(step.title) + '</h4><p>' + escapeHtml(step.description) + '</p>' + (step.url ? '<p><a target="_blank" rel="noopener" href="' + attr(step.url) + '">対象URLを開く</a></p>' : '') + '<p class="completion-note"><strong>完了条件:</strong> ' + escapeHtml(step.completionCriteria) + '</p></div>';
+    }).join('');
+    const review = record.autoReview || {};
+    document.getElementById('guide-detail-panel').innerHTML = '<div class="page-heading compact"><div><span class="guide-status ' + attr(record.status) + '">' + escapeHtml(statusLabel(record.status)) + '</span><h3>' + escapeHtml(workGuide.title) + '</h3></div><span class="meta">' + escapeHtml(record.workGuideId + ' / v' + record.currentVersion) + '</span></div><p>' + escapeHtml(workGuide.goal) + '</p>' +
+      (review.summary ? '<div class="validation-box success"><strong>AI自動検収:</strong> ' + escapeHtml(review.summary) + (review.remainingRisks && review.remainingRisks.length ? '<ul>' + review.remainingRisks.map(function (risk) { return '<li>' + escapeHtml(risk) + '</li>'; }).join('') + '</ul>' : '') + '</div>' : '') +
+      list('前提条件', workGuide.prerequisites) + list('注意事項', workGuide.warnings) + '<h4>手順</h4>' + steps +
+      '<p><a target="_blank" href="https://drive.google.com/open?id=' + attr(record.documentFileId) + '">Googleドキュメント</a> / <a target="_blank" href="https://drive.google.com/open?id=' + attr(record.jsonFileId) + '">JSON</a></p>' +
+      (record.status === 'ready' ? '<div class="button-row"><button class="secondary" onclick="App.reviseGuide(\'' + attr(record.workGuideId) + '\')">手動で新バージョン編集</button></div>' : '');
+  }
+
+  async function approveSelectedGuide() {
+    if (!state.selectedGuide || !window.confirm('この内容を承認して実行可能にしますか？')) return;
+    try {
+      await call('approveWorkGuide', state.selectedGuide.workGuideId, '画面で内容を確認し承認');
+      toast('作業ガイドを承認しました。実行可能フォルダへ移動しました。');
+      await loadGuides();
+    } catch (error) { showError(error); }
+  }
+
+  async function requestSelectedGuideRevision() {
+    const feedback = document.getElementById('guide-ai-feedback').value.trim();
+    if (!feedback) return showError(new Error('直してほしい点を入力してください。'));
+    if (!window.confirm('入力した指摘をAIへ送り、修正版と再検収結果を作成しますか？')) return;
+    try {
+      const result = await call('requestAiWorkGuideRevision', state.selectedGuide.workGuideId, feedback);
+      toast('AIが修正版 v' + result.version + ' を作成しました。内容を再確認してください。');
+      await loadGuides();
+      await openGuideDetail(result.workGuideId, result.version);
+    } catch (error) { showError(error); }
+  }
+
+  async function loadInteractionHistory(filter, elementId) {
+    try {
+      const result = await call('listAiInteractions', filter);
+      renderInteractionHistory(result.interactions || [], elementId);
+    } catch (error) {
+      document.getElementById(elementId).innerHTML = '<p class="empty">履歴を読み込めませんでした。</p>';
+    }
+  }
+
+  function renderInteractionHistory(interactions, elementId) {
+    document.getElementById(elementId).innerHTML = interactions.length ? interactions.map(function (item) {
+      const valid = item.validation && item.validation.valid;
+      return '<details class="interaction-item"><summary><strong>' + escapeHtml(aiPhaseLabel(item.phase)) + '</strong> / ' + escapeHtml(item.provider + ' ' + item.model) + ' / ' + escapeHtml(item.createdAt) + ' <span class="guide-status ' + (valid ? 'ready' : item.status === 'invalid' ? 'needs_review' : '') + '">' + escapeHtml(valid ? '検証OK' : statusLabel(item.status)) + '</span></summary><p><strong>入力:</strong> ' + escapeHtml(item.requestPreview) + '</p><p><strong>回答:</strong> ' + escapeHtml(item.responsePreview) + '</p>' + (item.error ? '<p class="validation-box error">' + escapeHtml(item.error) + '</p>' : '') + '<p><a target="_blank" href="' + attr(item.requestUrl) + '">入力ログ</a> / <a target="_blank" href="' + attr(item.responseUrl) + '">回答ログ</a></p></details>';
+    }).join('') : '<p class="empty">保存されたAI対話はありません（手動作成された既存ガイドの可能性があります）。</p>';
+  }
+
+  function aiPhaseLabel(phase) {
+    return ({ meeting_analysis: '会議解析・クイズ生成', work_guide_generation: '作業ガイド初稿', work_guide_review_revision: 'AI検収・自動修正', human_requested_revision: '人の指摘による修正', work_guide_revision: '手動レビュー後の修正' })[phase] || phase;
   }
 
   async function runPreflight(workGuideId, versionNo) {
@@ -838,7 +907,9 @@ const App = (function () {
   async function loadAutomationPanel() {
     try {
       state.automation = await call('getAutomationStatus');
+      state.aiSettings = state.automation.aiAutomation || null;
       renderAutomationPanel();
+      renderAiSettings();
     } catch (error) { showError(error); }
   }
 
@@ -846,7 +917,7 @@ const App = (function () {
     const automation = state.automation || {};
     const enabled = Boolean(automation.autoRegisterEnabled);
     document.getElementById('automation-status').innerHTML = enabled
-      ? '<span class="status-pill">有効</span> ' + escapeHtml(automation.intervalMinutes + '分ごとに自動登録を実行します。')
+      ? '<span class="status-pill">有効</span> ' + escapeHtml(automation.intervalMinutes + '分ごとに文字起こしを確認します。') + (automation.aiAutomation && automation.aiAutomation.autoProcessingEnabled ? ' AI解析・ガイド生成も自動です。' : ' AI処理は手動です。')
       : '<span class="status-pill">停止中</span> トリガーは設定されていません。';
     const button = document.getElementById('automation-toggle-button');
     button.disabled = false;
@@ -858,10 +929,51 @@ const App = (function () {
     if (!lastRun) return '<p class="muted">まだ実行されていません。</p>';
     const registered = lastRun.registered || [];
     const skipped = lastRun.skipped || [];
-    let html = '<p class="meta">最終実行: ' + escapeHtml(lastRun.ranAt) + ' / 登録 ' + registered.length + '件 / 対象外 ' + skipped.length + '件</p>';
+    const analyzed = lastRun.analyzedMeetings || [];
+    const guides = lastRun.generatedGuides || [];
+    const failures = lastRun.automationFailures || [];
+    const pending = lastRun.automationPending || [];
+    let html = '<p class="meta">最終実行: ' + escapeHtml(lastRun.ranAt) + ' / 登録 ' + registered.length + '件 / 会議解析 ' + analyzed.length + '件 / ガイド生成 ' + guides.length + '件 / 失敗 ' + failures.length + '件 / 続き待ち ' + pending.length + '件</p>';
     if (registered.length) html += '<ul>' + registered.map(function (item) { return '<li>' + escapeHtml(item.name + ' → ' + item.meetingId + '（' + item.category + '）') + '</li>'; }).join('') + '</ul>';
     if (skipped.length) html += '<details><summary>対象外の理由</summary><ul>' + skipped.map(function (item) { return '<li>' + escapeHtml(item.name + ': ' + item.reason) + '</li>'; }).join('') + '</ul></details>';
+    if (analyzed.length) html += '<ul>' + analyzed.map(function (item) { return '<li>' + escapeHtml(item.title + ': クイズ ' + item.quizQuestionCount + '問 / 作業候補 ' + item.actionCount + '件') + '</li>'; }).join('') + '</ul>';
+    if (guides.length) html += '<ul>' + guides.map(function (item) { return '<li>' + escapeHtml(item.title + ' → 承認待ち') + '</li>'; }).join('') + '</ul>';
+    if (failures.length) html += '<details open><summary>自動処理の失敗</summary><ul>' + failures.map(function (item) { return '<li>' + escapeHtml((item.meetingId || '') + ' ' + (item.actionId || '') + ': ' + item.error) + '</li>'; }).join('') + '</ul></details>';
+    if (lastRun.aiAutomationSkipped) html += '<p class="muted">' + escapeHtml(lastRun.aiAutomationSkipped) + '</p>';
     return html;
+  }
+
+  function renderAiSettings() {
+    const settings = state.aiSettings || {};
+    document.getElementById('ai-api-key').value = '';
+    document.getElementById('ai-model').value = settings.model || 'gpt-5.6-terra';
+    document.getElementById('ai-repair-attempts').value = String(settings.maxRepairAttempts === undefined ? 1 : settings.maxRepairAttempts);
+    document.getElementById('ai-data-consent').checked = Boolean(settings.dataConsent);
+    document.getElementById('ai-auto-enabled').checked = Boolean(settings.requestedAutoProcessingEnabled);
+    document.getElementById('ai-settings-status').innerHTML = (settings.apiKeyConfigured ? '<span class="guide-status ready">APIキー設定済み</span>' : '<span class="guide-status needs_review">APIキー未設定</span>') + ' / ' + (settings.autoProcessingEnabled ? '全自動処理は有効です。' : '全自動処理は停止中です。');
+  }
+
+  async function saveAiSettings() {
+    try {
+      const result = await call('saveAiAutomationSettings', {
+        apiKey: document.getElementById('ai-api-key').value.trim(),
+        model: document.getElementById('ai-model').value.trim(),
+        maxRepairAttempts: Number(document.getElementById('ai-repair-attempts').value),
+        dataConsent: document.getElementById('ai-data-consent').checked,
+        autoProcessingEnabled: document.getElementById('ai-auto-enabled').checked
+      });
+      state.aiSettings = result.settings;
+      renderAiSettings();
+      toast('生成AI接続設定を保存しました。');
+      await loadAutomationPanel();
+    } catch (error) { showError(error); }
+  }
+
+  async function testAiConnection() {
+    try {
+      const result = await call('testAiAutomationConnection');
+      toast(result.message + ' モデル: ' + result.model);
+    } catch (error) { showError(error); }
   }
 
   async function toggleAutoRegister() {
@@ -877,9 +989,11 @@ const App = (function () {
     try {
       const result = await call('runAutoRegisterNow');
       const registered = (result.summary && result.summary.registered) || [];
-      toast(registered.length ? registered.length + '件の文字起こしを会議として登録しました。' : '新しく登録できる文字起こしはありませんでした。');
+      const analyzed = (result.summary && result.summary.analyzedMeetings) || [];
+      const guides = (result.summary && result.summary.generatedGuides) || [];
+      toast('自動処理完了: 登録 ' + registered.length + '件 / 会議解析 ' + analyzed.length + '件 / 承認待ちガイド ' + guides.length + '件');
       await loadAutomationPanel();
-      if (registered.length) await loadTranscriptWorkflows();
+      await loadTranscriptWorkflows();
     } catch (error) { showError(error); }
   }
 
@@ -936,10 +1050,10 @@ const App = (function () {
     loadActions: loadActions, startBuild: startBuild, reviseGuide: reviseGuide, searchSources: searchSources, prepareGuidePrompt: prepareGuidePrompt,
     importGuide: importGuide, prepareRevisionPrompt: prepareRevisionPrompt, addGuideStep: addGuideStep, deleteGuideStep: deleteGuideStep, moveGuideStep: moveGuideStep,
     duplicateGuideStep: duplicateGuideStep, saveBuildDraft: saveBuildDraft, saveGuide: saveGuide, loadGuides: loadGuides,
-    openGuideDetail: openGuideDetail, backToGuideList: backToGuideList, startExecution: startExecution, loadExecutions: loadExecutions, openExecution: openExecution,
+    openGuideDetail: openGuideDetail, approveSelectedGuide: approveSelectedGuide, requestSelectedGuideRevision: requestSelectedGuideRevision, backToGuideList: backToGuideList, startExecution: startExecution, loadExecutions: loadExecutions, openExecution: openExecution,
     saveCurrentStep: saveCurrentStep, pauseExecution: pauseExecution, resumeExecution: resumeExecution, completeExecution: completeExecution,
     runDiagnostics: runDiagnostics, loadAllowedActions: loadAllowedActions, registerAction: registerAction, unregisterAction: unregisterAction,
-    loadAutomationPanel: loadAutomationPanel, toggleAutoRegister: toggleAutoRegister, runAutoRegisterNow: runAutoRegisterNow, loadAutomationCandidates: loadAutomationCandidates,
+    loadAutomationPanel: loadAutomationPanel, toggleAutoRegister: toggleAutoRegister, runAutoRegisterNow: runAutoRegisterNow, loadAutomationCandidates: loadAutomationCandidates, saveAiSettings: saveAiSettings, testAiConnection: testAiConnection,
     copyText: copyText, copyPromptToChatGpt: copyPromptToChatGpt
   };
 })();

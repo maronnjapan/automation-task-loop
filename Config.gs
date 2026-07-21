@@ -10,13 +10,20 @@ const APP_CONFIG = Object.freeze({
   propertyKeys: Object.freeze({
     rootFolderId: 'ROOT_FOLDER_ID',
     spreadsheetId: 'MANAGEMENT_SPREADSHEET_ID',
-    setupCompletedAt: 'SETUP_COMPLETED_AT'
+    setupCompletedAt: 'SETUP_COMPLETED_AT',
+    openAiApiKey: 'OPENAI_API_KEY',
+    openAiModel: 'OPENAI_MODEL',
+    aiAutomationEnabled: 'AI_AUTOMATION_ENABLED',
+    aiDataConsent: 'AI_DATA_CONSENT',
+    aiMaxRepairAttempts: 'AI_MAX_REPAIR_ATTEMPTS',
+    managementSchemaVersion: 'MANAGEMENT_SCHEMA_VERSION'
   }),
   folderPaths: Object.freeze({
     transcripts: ['01_文字起こし'],
     transcriptsDone: ['01_文字起こし', '完了'],
     analysisSummaries: ['02_会議解析', '要約'],
     analysisJson: ['02_会議解析', 'AI回答JSON'],
+    aiInteractionLogs: ['02_会議解析', 'AI対話履歴'],
     guideDrafts: ['03_作業ガイド', '作成途中'],
     guideReady: ['03_作業ガイド', '実行可能'],
     guideNeedsReview: ['03_作業ガイド', '要確認'],
@@ -36,20 +43,25 @@ const APP_CONFIG = Object.freeze({
   }),
   cacheSeconds: 21600,
   maxTranscriptCharacters: 120000,
-  maxSourceCharacters: 30000
+  maxSourceCharacters: 30000,
+  defaultAiModel: 'gpt-5.6-terra',
+  defaultAiMaxRepairAttempts: 1,
+  automationTimeBudgetMs: 240000,
+  managementSchemaVersion: '2026-07-ai-automation-v1'
 });
 
 const SHEET_DEFINITIONS = Object.freeze({
-  Meetings: ['meetingId', 'title', 'category', 'transcriptFileId', 'meetingEndedAt', 'registeredAt', 'analysisStatus', 'workflowStatus', 'completedAt'],
+  Meetings: ['meetingId', 'title', 'category', 'transcriptFileId', 'meetingEndedAt', 'registeredAt', 'analysisStatus', 'workflowStatus', 'completedAt', 'automationStatus', 'automationAttempts', 'automationError', 'automationUpdatedAt'],
   MeetingAnalyses: ['meetingId', 'summaryFileId', 'analysisJsonFileId', 'summary', 'decisionsJson', 'pendingItemsJson', 'quizJson', 'analyzedAt'],
-  Actions: ['actionId', 'meetingId', 'title', 'description', 'owner', 'dueDate', 'status', 'prerequisiteQuestionsJson', 'createdAt'],
+  Actions: ['actionId', 'meetingId', 'title', 'description', 'owner', 'dueDate', 'status', 'prerequisiteQuestionsJson', 'createdAt', 'guideRecommended', 'automationStatus', 'automationAttempts', 'automationError'],
   QuizSessions: ['quizSessionId', 'meetingId', 'mode', 'status', 'answersJson', 'questionStatesJson', 'scoreJson', 'updatedAt'],
   WorkGuideBuildSessions: ['buildSessionId', 'actionId', 'meetingId', 'currentStep', 'status', 'dataJson', 'createdAt', 'updatedAt'],
-  WorkGuides: ['workGuideId', 'actionId', 'meetingId', 'title', 'status', 'currentVersion', 'documentFileId', 'jsonFileId', 'createdAt', 'updatedAt', 'lastExecutedAt'],
+  WorkGuides: ['workGuideId', 'actionId', 'meetingId', 'title', 'status', 'currentVersion', 'documentFileId', 'jsonFileId', 'createdAt', 'updatedAt', 'lastExecutedAt', 'reviewedAt', 'reviewNote', 'generationMode', 'autoReviewJson'],
   WorkGuideVersions: ['workGuideVersionId', 'workGuideId', 'versionNo', 'goal', 'assumptionsJson', 'prerequisitesJson', 'warningsJson', 'stepsJson', 'sourceSnapshotsJson', 'documentFileId', 'jsonFileId', 'createdAt'],
   WorkGuideExecutions: ['executionId', 'workGuideId', 'workGuideVersionId', 'status', 'currentStepId', 'startedAt', 'pausedAt', 'completedAt', 'executionDataJson', 'notes'],
   AllowedActionRegistry: ['scriptId', 'name', 'description', 'paramsJson', 'impactNote', 'registeredAt'],
-  SaveRequests: ['requestToken', 'workGuideId', 'versionNo', 'resultJson', 'createdAt']
+  SaveRequests: ['requestToken', 'workGuideId', 'versionNo', 'resultJson', 'createdAt'],
+  AiInteractions: ['interactionId', 'conversationId', 'meetingId', 'actionId', 'workGuideId', 'buildSessionId', 'phase', 'iteration', 'provider', 'model', 'requestFileId', 'responseFileId', 'requestPreview', 'responsePreview', 'status', 'validationJson', 'error', 'createdAt']
 });
 
 function getAppSettings() {
@@ -60,7 +72,8 @@ function getAppSettings() {
     setupCompletedAt: properties.getProperty(APP_CONFIG.propertyKeys.setupCompletedAt) || '',
     categories: APP_CONFIG.categories.slice(),
     appName: APP_CONFIG.appName,
-    schemaVersion: APP_CONFIG.schemaVersion
+    schemaVersion: APP_CONFIG.schemaVersion,
+    aiAutomation: getAiAutomationSettings_()
   };
 }
 

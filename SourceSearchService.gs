@@ -35,7 +35,7 @@ function buildSelectedSourceContext_(fileIds) {
     let excerpt = '';
     if (remaining > 0) {
       try {
-        excerpt = readTextFile_(fileId, APP_CONFIG.maxSourceCharacters).slice(0, remaining);
+        excerpt = readTextFile_(fileId, APP_CONFIG.maxTranscriptCharacters).slice(0, remaining);
       } catch (error) {
         excerpt = '[本文を直接取得できない形式です。ファイル名とURLを参照してください]';
       }

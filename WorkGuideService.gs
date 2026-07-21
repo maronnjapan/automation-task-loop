@@ -16,7 +16,8 @@ function saveWorkGuide(payload) {
     }
     lock.waitLock(30000);
     requestRow = findRow_('SaveRequests', function (row) { return String(row.requestToken) === String(payload.requestToken); });
-    const fingerprint = fingerprint_(payload.workGuide);
+    const targetStatus = payload.reviewRequired === true ? APP_CONFIG.statuses.guideNeedsReview : APP_CONFIG.statuses.guideReady;
+    const fingerprint = fingerprint_({ workGuide: payload.workGuide, targetStatus: targetStatus });
     if (requestRow) {
       state = parseJsonCell_(requestRow.resultJson, {});
       assertApp_(!state.fingerprint || state.fingerprint === fingerprint, 'REQUEST_TOKEN_REUSED', '同じ保存リクエスト識別子を異なる内容に再利用できません。');
@@ -24,10 +25,11 @@ function saveWorkGuide(payload) {
       completed.documentCreated = Boolean(state.completed && state.completed.documentCreated);
       completed.jsonCreated = Boolean(state.completed && state.completed.jsonCreated);
       completed.spreadsheetUpdated = Boolean(state.completed && state.completed.spreadsheetUpdated);
+      state.targetStatus = state.targetStatus || targetStatus;
     }
     if (payload.buildSessionId) {
       const lockedBuild = requireBuildSession_(payload.buildSessionId);
-      assertApp_(String(lockedBuild.status) !== 'completed', 'BUILD_SESSION_CLOSED', 'この作成セッションは保存済みです。');
+      assertApp_(String(lockedBuild.status) !== 'completed' || completed.spreadsheetUpdated, 'BUILD_SESSION_CLOSED', 'この作成セッションは保存済みです。');
     }
     if (!requestRow) {
       const guideForId = payload.workGuide || {};
@@ -39,7 +41,7 @@ function saveWorkGuide(payload) {
       state = {
         success: false, status: 'processing', fingerprint: fingerprint, workGuideId: workGuideId, version: version,
         workGuideVersionId: workGuideId + '-V' + version, completed: completed,
-        documentFileId: '', jsonFileId: '', createdAt: nowIso_()
+        documentFileId: '', jsonFileId: '', targetStatus: targetStatus, createdAt: nowIso_()
       };
       appendObject_('SaveRequests', {
         requestToken: payload.requestToken, workGuideId: workGuideId, versionNo: version,
@@ -55,13 +57,13 @@ function saveWorkGuide(payload) {
 
     if (!completed.documentCreated) {
       const documentFile = createWorkGuideDocument_(guide);
-      documentFile.moveTo(getFolderByPath_(APP_CONFIG.folderPaths.guideReady));
+      documentFile.moveTo(getFolderByPath_(state.targetStatus === APP_CONFIG.statuses.guideNeedsReview ? APP_CONFIG.folderPaths.guideNeedsReview : APP_CONFIG.folderPaths.guideReady));
       state.documentFileId = documentFile.getId();
       completed.documentCreated = true;
       persistSaveState_(requestRow, state, completed);
     }
     if (!completed.jsonCreated) {
-      const jsonFile = createJsonFile_(getFolderByPath_(APP_CONFIG.folderPaths.guideReady), guide.workGuideId + '_v' + guide.version + '.json', guide);
+      const jsonFile = createJsonFile_(getFolderByPath_(state.targetStatus === APP_CONFIG.statuses.guideNeedsReview ? APP_CONFIG.folderPaths.guideNeedsReview : APP_CONFIG.folderPaths.guideReady), guide.workGuideId + '_v' + guide.version + '.json', guide);
       state.jsonFileId = jsonFile.getId();
       completed.jsonCreated = true;
       persistSaveState_(requestRow, state, completed);
@@ -80,17 +82,21 @@ function saveWorkGuide(payload) {
       const existingGuide = findRow_('WorkGuides', function (row) { return String(row.workGuideId) === String(guide.workGuideId); });
       if (existingGuide) {
         updateRow_('WorkGuides', existingGuide._rowNumber, {
-          actionId: action.actionId, meetingId: action.meetingId, title: guide.title, status: APP_CONFIG.statuses.guideReady,
-          currentVersion: guide.version, documentFileId: state.documentFileId, jsonFileId: state.jsonFileId, updatedAt: now
+          actionId: action.actionId, meetingId: action.meetingId, title: guide.title, status: state.targetStatus,
+          currentVersion: guide.version, documentFileId: state.documentFileId, jsonFileId: state.jsonFileId, updatedAt: now,
+          reviewedAt: state.targetStatus === APP_CONFIG.statuses.guideReady ? now : '', reviewNote: '',
+          generationMode: payload.generationMode || existingGuide.generationMode || 'manual', autoReviewJson: payload.autoReview || {}
         });
       } else {
         appendObject_('WorkGuides', {
           workGuideId: guide.workGuideId, actionId: action.actionId, meetingId: action.meetingId, title: guide.title,
-          status: APP_CONFIG.statuses.guideReady, currentVersion: guide.version,
-          documentFileId: state.documentFileId, jsonFileId: state.jsonFileId, createdAt: now, updatedAt: now, lastExecutedAt: ''
+          status: state.targetStatus, currentVersion: guide.version,
+          documentFileId: state.documentFileId, jsonFileId: state.jsonFileId, createdAt: now, updatedAt: now, lastExecutedAt: '',
+          reviewedAt: state.targetStatus === APP_CONFIG.statuses.guideReady ? now : '', reviewNote: '',
+          generationMode: payload.generationMode || 'manual', autoReviewJson: payload.autoReview || {}
         });
       }
-      updateRow_('Actions', action._rowNumber, { status: 'guide_ready' });
+      updateRow_('Actions', action._rowNumber, { status: state.targetStatus === APP_CONFIG.statuses.guideNeedsReview ? 'guide_review' : 'guide_ready' });
       if (payload.buildSessionId) {
         const build = requireBuildSession_(payload.buildSessionId);
         updateRow_('WorkGuideBuildSessions', build._rowNumber, { currentStep: 11, status: 'completed', updatedAt: now });
@@ -126,6 +132,34 @@ function saveWorkGuide(payload) {
   }
 }
 
+function approveWorkGuide(workGuideId, reviewNote) {
+  return withClientError_(function () {
+    const lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    try {
+      const record = requireWorkGuideRecord_(workGuideId);
+      assertApp_(String(record.status) === APP_CONFIG.statuses.guideNeedsReview, 'GUIDE_NOT_WAITING_REVIEW', 'この作業ガイドは承認待ちではありません。');
+      const documentFile = getFileSafely_(record.documentFileId);
+      const jsonFile = getFileSafely_(record.jsonFileId);
+      assertApp_(documentFile && jsonFile, 'GUIDE_FILE_NOT_FOUND', '承認対象のドキュメントまたはJSONが見つかりません。');
+      const readyFolder = getFolderByPath_(APP_CONFIG.folderPaths.guideReady);
+      documentFile.moveTo(readyFolder);
+      jsonFile.moveTo(readyFolder);
+      const reviewedAt = nowIso_();
+      updateRow_('WorkGuides', record._rowNumber, {
+        status: APP_CONFIG.statuses.guideReady, reviewedAt: reviewedAt,
+        reviewNote: nonEmptyString_(reviewNote) ? reviewNote.trim() : '内容を確認し承認', updatedAt: reviewedAt
+      });
+      const action = requireAction_(record.actionId);
+      updateRow_('Actions', action._rowNumber, { status: 'guide_ready', automationStatus: 'completed', automationError: '' });
+      refreshMeetingAutomationStatus_(record.meetingId);
+      return { success: true, workGuideId: workGuideId, status: APP_CONFIG.statuses.guideReady, reviewedAt: reviewedAt };
+    } finally {
+      lock.releaseLock();
+    }
+  });
+}
+
 function persistSaveState_(requestRow, state, completed) {
   state.completed = Object.assign({}, completed);
   updateRow_('SaveRequests', requestRow._rowNumber, { resultJson: state });
@@ -140,7 +174,12 @@ function listWorkGuides() {
   return withClientError_(function () {
     const completed = completedMeetingIds_();
     const guides = getRows_('WorkGuides').filter(function (row) { return !completed[String(row.meetingId)]; });
-    return { success: true, workGuides: guides.reverse().map(stripRowMetadata_) };
+    return { success: true, workGuides: guides.reverse().map(function (row) {
+      const guide = stripRowMetadata_(row);
+      guide.autoReview = parseJsonCell_(guide.autoReviewJson, {});
+      delete guide.autoReviewJson;
+      return guide;
+    }) };
   });
 }
 
@@ -156,7 +195,10 @@ function getWorkGuide(workGuideId, versionNo) {
       versionId = version.workGuideVersionId;
     }
     const guide = JSON.parse(readTextFile_(fileId, APP_CONFIG.maxTranscriptCharacters));
-    return { success: true, workGuide: guide, workGuideVersionId: versionId, record: stripRowMetadata_(record) };
+    const hydratedRecord = stripRowMetadata_(record);
+    hydratedRecord.autoReview = parseJsonCell_(hydratedRecord.autoReviewJson, {});
+    delete hydratedRecord.autoReviewJson;
+    return { success: true, workGuide: guide, workGuideVersionId: versionId, record: hydratedRecord };
   });
 }
 

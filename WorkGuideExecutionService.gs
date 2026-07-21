@@ -1,14 +1,15 @@
 function preflightWorkGuide(workGuideId, versionNo) {
   return withClientError_(function () {
     const loaded = getWorkGuideOrThrow_(workGuideId, versionNo);
-    return { success: true, preflight: buildPreflight_(loaded.guide), workGuide: loaded.guide, workGuideVersionId: loaded.versionId };
+    return { success: true, preflight: buildPreflight_(loaded.guide, loaded.record), workGuide: loaded.guide, workGuideVersionId: loaded.versionId };
   });
 }
 
 function startWorkGuideExecution(workGuideId, versionNo, warningConfirmed) {
   return withClientError_(function () {
     const loaded = getWorkGuideOrThrow_(workGuideId, versionNo);
-    const preflight = buildPreflight_(loaded.guide);
+    assertApp_(String(loaded.record.status) === APP_CONFIG.statuses.guideReady, 'GUIDE_APPROVAL_REQUIRED', '作業ガイドを承認してから実行してください。');
+    const preflight = buildPreflight_(loaded.guide, loaded.record);
     assertApp_(preflight.level !== 'unavailable', 'PREFLIGHT_FAILED', '実行不可の項目を解消してください。', { checks: preflight.checks });
     if (preflight.level === 'warning') assertApp_(warningConfirmed === true, 'WARNING_CONFIRMATION_REQUIRED', '注意事項を確認してから続行してください。');
     const existing = findRow_('WorkGuideExecutions', function (row) {
@@ -131,8 +132,11 @@ function listWorkGuideExecutions(workGuideId) {
   });
 }
 
-function buildPreflight_(guide) {
+function buildPreflight_(guide, record) {
   const checks = [];
+  if (record && String(record.status) !== APP_CONFIG.statuses.guideReady) {
+    checks.push(preflightCheck_('guide_approval', 'unavailable', 'この作業ガイドは承認待ちです。内容を確認して「このガイドでOK」を押してください。'));
+  }
   guide.sourceSnapshots.forEach(function (snapshot) {
     const file = getFileSafely_(snapshot.fileId);
     if (!file) checks.push(preflightCheck_('source_exists:' + snapshot.fileId, 'unavailable', snapshot.fileName + ' が見つかりません。'));
@@ -224,5 +228,5 @@ function getWorkGuideOrThrow_(workGuideId, versionNo) {
     actualVersion = Number(version.versionNo);
   }
   const guide = JSON.parse(readTextFile_(fileId, APP_CONFIG.maxTranscriptCharacters));
-  return { guide: guide, versionId: workGuideId + '-V' + actualVersion };
+  return { guide: guide, versionId: workGuideId + '-V' + actualVersion, record: record };
 }

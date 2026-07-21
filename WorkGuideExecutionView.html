@@ -2,14 +2,25 @@
   <div class="page-heading"><div><p class="eyebrow">ADMIN</p><h2>管理・診断</h2></div></div>
   <div class="two-columns">
     <article class="panel">
-      <h3>文字起こしの自動登録</h3>
-      <p class="muted">時間主導トリガーで 01_文字起こし フォルダを定期確認し、未登録の文字起こしを会議として自動登録します（タイトル・カテゴリーはファイル名と格納フォルダから自動判定。生成AIのAPIは使いません）。登録後はダッシュボードに「解析待ち」として表示されます。</p>
+      <h3>文字起こしからの全自動処理</h3>
+      <p class="muted">5分ごとに文字起こしを確認します。OpenAI接続を有効にすると、会議登録 → 解析・クイズ → 作業ガイド初稿 → AIによる検収・修正 → 承認待ち保存まで自動で進みます。</p>
       <div id="automation-status" class="meta">読込中...</div>
       <div class="button-row">
         <button id="automation-toggle-button" onclick="App.toggleAutoRegister()" disabled>読込中...</button>
         <button class="secondary" onclick="App.runAutoRegisterNow()">今すぐ実行</button>
       </div>
       <div id="automation-last-run"></div>
+    </article>
+    <article class="panel">
+      <h3>生成AI接続</h3>
+      <p class="muted">APIキーはApps ScriptのScript Propertiesにのみ保存し、画面へ再表示しません。AIへ送った会議記録と回答は本人のDriveにも監査ログとして保存します。</p>
+      <label>OpenAI APIキー<input id="ai-api-key" type="password" autocomplete="off" placeholder="設定済みなら空欄のままで維持"></label>
+      <label>モデル<input id="ai-model" value="gpt-5.6-terra"></label>
+      <label>JSON検証失敗時の自動修復回数<select id="ai-repair-attempts"><option value="0">0回</option><option value="1">1回</option><option value="2">2回</option></select></label>
+      <label class="check-line"><input id="ai-data-consent" type="checkbox"> 会議記録・参照資料を設定したOpenAI APIへ送信することを確認しました</label>
+      <label class="check-line"><input id="ai-auto-enabled" type="checkbox"> 解析・クイズ・作業ガイド生成・AI検収を全自動で行う</label>
+      <div id="ai-settings-status" class="meta"></div>
+      <div class="button-row"><button onclick="App.saveAiSettings()">設定を保存</button><button class="secondary" onclick="App.testAiConnection()">接続テスト</button></div>
     </article>
     <article class="panel">
       <h3>スクリプト化候補（繰り返し検出）</h3>
@@ -22,4 +33,5 @@
     <article class="panel"><h3>設定診断</h3><button onclick="App.runDiagnostics()">診断を実行</button><div id="diagnostics-result"></div></article>
     <article class="panel"><h3>登録スクリプト</h3><p class="muted">コードに実装され、本人が明示登録した処理だけが作業ガイドから実行できます。</p><div id="allowed-actions"></div><button class="secondary" onclick="App.loadAllowedActions()">一覧更新</button></article>
   </div>
+  <article class="panel"><h3>手動フォールバック</h3><p class="muted">APIを使わない場合や失敗内容を手で直す場合だけ利用します。</p><div class="button-row"><button class="secondary" onclick="App.showView('meetings')">会議解析を手動で行う</button><button class="secondary" onclick="App.showView('actions')">作業候補から手動作成</button></div></article>
 </section>

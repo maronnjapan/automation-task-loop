@@ -2,7 +2,7 @@
   <!-- 画面1: 作業一覧 -->
   <div id="guides-screen-list" class="guide-screen">
     <div class="page-heading"><div><p class="eyebrow">PHASE 5</p><h2>作業一覧</h2></div><button class="secondary" onclick="App.loadGuides()">一覧更新</button></div>
-    <div class="notice info">作業ガイドを選ぶと詳細画面が開きます。実行前確認のあと、手順を1つずつステップごとに実行できます。</div>
+    <div class="notice info">「承認待ち」を先に確認してください。内容がよければOKを押すだけで実行可能になります。生成AIとの往復は詳細画面から後で確認できます。</div>
     <div id="active-work-wrap" class="hidden">
       <div class="page-heading compact"><h3>進行中・中断中の作業</h3></div>
       <div id="execution-list" class="item-list"></div>
@@ -15,6 +15,15 @@
   <div id="guides-screen-detail" class="guide-screen hidden">
     <div class="page-heading"><div><p class="eyebrow">GUIDE DETAIL</p><h2 id="guide-detail-title">作業詳細</h2></div><button class="secondary" onclick="App.backToGuideList()">← 作業一覧へ戻る</button></div>
     <article class="panel" id="guide-detail-panel"></article>
+    <article id="guide-review-actions" class="panel hidden">
+      <h3>ガイドを確認する</h3>
+      <div class="button-row"><button onclick="App.approveSelectedGuide()">このガイドでOK</button></div>
+      <label>直してほしい点（任意）<textarea id="guide-ai-feedback" rows="3" placeholder="例: S2の完了条件を、確認できる数値まで具体化して"></textarea></label>
+      <button class="secondary" onclick="App.requestSelectedGuideRevision()">AIに修正版を作ってもらう</button>
+    </article>
+    <article class="panel">
+      <details open><summary><strong>生成AIとのやりとり・自動修正の経緯</strong></summary><div id="guide-ai-history" class="interaction-list"><p class="empty">読込中...</p></div></details>
+    </article>
     <article id="preflight-panel" class="panel hidden">
       <h3>実行前確認</h3>
       <div id="preflight-result"></div>

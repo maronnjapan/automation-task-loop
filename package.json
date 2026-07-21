@@ -7,8 +7,9 @@
     "node": ">=20"
   },
   "scripts": {
-    "setup": "node scripts/setup.mjs",
-    "deploy": "node scripts/setup.mjs --reuse-project"
+    "setup": "npm test && node scripts/setup.mjs",
+    "deploy": "npm test && node scripts/setup.mjs --reuse-project",
+    "test": "node scripts/verify.mjs"
   },
   "devDependencies": {
     "@google/clasp": "3.3.0"
