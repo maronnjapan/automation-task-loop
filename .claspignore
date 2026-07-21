@@ -3,6 +3,7 @@
 README.md
 SPEC.md
 SETUP_GUIDE.md
+dist/**
 scripts/**
 node_modules/**
 package*.json

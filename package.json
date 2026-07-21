@@ -7,6 +7,7 @@
     "node": ">=20"
   },
   "scripts": {
+    "build": "node scripts/build-dist.mjs",
     "setup": "npm test && node scripts/setup.mjs",
     "deploy": "npm test && node scripts/setup.mjs --reuse-project",
     "test": "node scripts/verify.mjs"
