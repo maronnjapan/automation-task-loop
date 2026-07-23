@@ -16,9 +16,19 @@ function saveWorkGuide(payload) {
       const initialBuild = requireBuildSession_(payload.buildSessionId);
       assertApp_(String(initialBuild.actionId) === String(action.actionId), 'ID_MISMATCH', '作成セッションと作業候補が一致しません。');
       assertApp_(['in_progress', 'draft', 'completed'].indexOf(String(initialBuild.status)) >= 0, 'BUILD_SESSION_CLOSED', 'この作成セッションは終了済みです。');
+      const initialBuildData = parseJsonCell_(initialBuild.dataJson, {});
       if (payload.generationMode === 'automatic') {
-        const initialBuildData = parseJsonCell_(initialBuild.dataJson, {});
         assertApp_(initialBuildData.creationMode === 'automatic', 'MANUAL_BUILD_IN_PROGRESS', '手動作成へ切り替えられたため、自動生成したガイドは保存しません。');
+      }
+      if (isPlainObject_(initialBuildData.skeleton) && Array.isArray(initialBuildData.ledger)) {
+        const readiness = computeLedgerReadiness_(initialBuildData.skeleton, initialBuildData.ledger);
+        assertApp_(readiness.gatePassed && initialBuildData.gatePassed === true, 'GATE_NOT_PASSED', '準備度ゲートを通過したガイドだけ保存できます。', { holes: readiness.holes });
+        const ledgerErrors = assessGuideAgainstLedger_(payload.workGuide, initialBuildData.ledger);
+        assertApp_(!ledgerErrors.length, 'LEDGER_MISMATCH', '編集後のガイドが知識台帳と一致しないため保存できません。', { errors: ledgerErrors });
+        if (initialBuildData.creationMode !== 'automatic') {
+          assertApp_(initialBuildData.deskReview && initialBuildData.deskReview.passed === true, 'DESK_REVIEW_REQUIRED', '机上実行レビューで「完走」を確認してから保存してください。');
+          assertApp_(initialBuildData.deskReview.guideFingerprint === fingerprint_(payload.workGuide), 'DESK_REVIEW_STALE', '机上実行レビュー後に内容が変わっています。編集内容を一時保存し、最終稿でもう一度机上実行レビューを行ってください。');
+        }
       }
     }
     lock.waitLock(30000);
@@ -110,7 +120,7 @@ function saveWorkGuide(payload) {
       updateRow_('Actions', action._rowNumber, { status: state.targetStatus === APP_CONFIG.statuses.guideNeedsReview ? 'guide_review' : 'guide_ready' });
       if (payload.buildSessionId) {
         const build = requireBuildSession_(payload.buildSessionId);
-        updateRow_('WorkGuideBuildSessions', build._rowNumber, { currentStep: 11, status: 'completed', updatedAt: now });
+        updateRow_('WorkGuideBuildSessions', build._rowNumber, { currentStep: 10, status: 'completed', updatedAt: now });
       }
       completed.spreadsheetUpdated = true;
       persistSaveState_(requestRow, state, completed);

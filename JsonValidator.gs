@@ -138,6 +138,23 @@ function validateGuideSteps_(steps, snapshots, errors, options) {
     if (!nonEmptyString_(step.description)) errors.push(path + '.description は必須です。');
     if (step.url && !isAllowedUrl_(step.url)) errors.push(path + '.url は http または https URL です。');
     if (!nonEmptyString_(step.completionCriteria)) errors.push(path + '.completionCriteria は必須です。');
+    // GUIDE_DEEPDIVE_DESIGN §7.4 の拡張フィールド（任意。指定する場合は構造を検証する）
+    if (step.verification !== undefined) {
+      if (!isPlainObject_(step.verification) || ['visual', 'command', 'value_match'].indexOf(step.verification.method) < 0 || !nonEmptyString_(step.verification.detail)) {
+        errors.push(path + '.verification は method（visual | command | value_match）と detail が必要です。');
+      }
+    }
+    if (step.failureRecovery !== undefined) {
+      if (!isPlainObject_(step.failureRecovery) || !Array.isArray(step.failureRecovery.checks) || step.failureRecovery.checks.some(function (check) { return !nonEmptyString_(check); })) {
+        errors.push(path + '.failureRecovery は checks（文字列の配列）が必要です。');
+      } else if (step.failureRecovery.resumeFrom !== undefined && typeof step.failureRecovery.resumeFrom !== 'string') {
+        errors.push(path + '.failureRecovery.resumeFrom は文字列です。');
+      }
+    }
+    if (step.scopeNote !== undefined && typeof step.scopeNote !== 'string') errors.push(path + '.scopeNote は文字列です。');
+    if (step.evidenceRefs !== undefined && (!Array.isArray(step.evidenceRefs) || step.evidenceRefs.some(function (entryId) { return !nonEmptyString_(entryId); }))) {
+      errors.push(path + '.evidenceRefs は台帳 entryId の配列です。');
+    }
     if (!Array.isArray(step.sourceReferences)) errors.push(path + '.sourceReferences は配列です。');
     else step.sourceReferences.forEach(function (fileId) { if (!sourceIds[String(fileId)]) errors.push(path + '.sourceReferences に sourceSnapshots 未登録の fileId があります。'); });
     if (step.type === 'input') validateInputs_(step.inputs, path, errors);

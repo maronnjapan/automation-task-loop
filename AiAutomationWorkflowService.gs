@@ -223,11 +223,10 @@ function automateActionGuide_(action) {
   const data = parseJsonCell_(session.dataJson, {});
   const selectedSources = buildSelectedSourceContext_([meeting.transcriptFileId]);
   data.knownPrerequisites = [];
-  data.prerequisiteAnswers = {};
   data.selectedSources = selectedSources.map(function (source) {
     return { fileId: source.fileId, fileName: source.fileName, url: source.url, snapshotAt: source.snapshotAt };
   });
-  const context = {
+  const sourceContext = {
     action: data.action,
     meeting: {
       meetingId: meeting.meetingId,
@@ -243,16 +242,51 @@ function automateActionGuide_(action) {
     workGuideId: '',
     version: 1
   };
-  updateAutomaticWorkGuideBuild_(session.buildSessionId, 7, data);
+  updateAutomaticWorkGuideBuild_(session.buildSessionId, 4, data);
 
   let reviewedValue = null;
   let conversationId = '';
-  if (isPlainObject_(data.importedWorkGuide) && isPlainObject_(data.autoReview)) {
+  if (isPlainObject_(data.importedWorkGuide) && isPlainObject_(data.autoReview) && isPlainObject_(data.skeleton) && Array.isArray(data.ledger)) {
     validateWorkGuide_(data.importedWorkGuide);
+    const resumedLedgerErrors = assessGuideAgainstLedger_(data.importedWorkGuide, data.ledger);
+    assertApp_(!resumedLedgerErrors.length, 'LEDGER_MISMATCH', '再開した自動生成ガイドが知識台帳と一致しません。', { errors: resumedLedgerErrors });
     reviewedValue = { workGuide: data.importedWorkGuide, review: data.autoReview };
   } else {
+    // P1: 文字起こしから骨格と台帳を初期化する。API経路でも手動経路と同じ状態モデルを使う。
+    const initialized = runAiJsonTask_({
+      prompt: buildGuideSkeletonPrompt_(sourceContext, { jsonOnly: true }),
+      phase: 'ledger_init',
+      meta: { meetingId: meeting.meetingId, actionId: action.actionId, buildSessionId: session.buildSessionId },
+      validator: function (value) { return normalizeSkeletonLedgerResult_(value); }
+    });
+    data.skeleton = initialized.value.skeleton;
+    data.ledger = materializeMissingLedgerEntries_(data.skeleton, initialized.value.entries, false, '全自動経路で不足スロットを追加');
+    // 全自動経路では人へ質問できない。unknown / assumed は黙って消さず、すべて作業前確認へ降格する。
+    data.ledger.forEach(function (entry) {
+      if (entry.confidence !== 'confirmed') {
+        entry.deferred = true;
+        entry.updatedAt = nowIso_();
+      }
+    });
+    data.gatePassed = true;
+    pushLedgerAudit_(data, 'auto_init', '全自動で台帳' + data.ledger.length + '件を初期化し、未確認項目を作業前確認へ降格');
+    const readiness = computeLedgerReadiness_(data.skeleton, data.ledger);
+    assertApp_(readiness.gatePassed, 'GATE_NOT_PASSED', '全自動経路の準備度ゲートを通過できません。', { holes: readiness.holes });
+    updateAutomaticWorkGuideBuild_(session.buildSessionId, 6, data);
+
+    const guideContext = {
+      action: data.action,
+      meeting: sourceContext.meeting,
+      skeleton: data.skeleton,
+      confirmedEntries: data.ledger.filter(function (entry) { return entry.confidence === 'confirmed'; }),
+      deferredEntries: data.ledger.filter(function (entry) { return entry.deferred === true; }),
+      allowedScripts: sourceContext.allowedScripts,
+      selectedSources: selectedSources,
+      workGuideId: '',
+      version: 1
+    };
     const generated = runAiJsonTask_({
-      prompt: buildWorkGuidePrompt_(context),
+      prompt: buildLedgerGuidePrompt_(guideContext, { jsonOnly: true }),
       phase: 'work_guide_generation',
       meta: { meetingId: meeting.meetingId, actionId: action.actionId, buildSessionId: session.buildSessionId },
       validator: function (guide) {
@@ -260,37 +294,63 @@ function automateActionGuide_(action) {
         guide.version = 1;
         guide.schemaVersion = APP_CONFIG.schemaVersion;
         guide.sourceSnapshots = JSON.parse(JSON.stringify(data.selectedSources));
-        return validateWorkGuide_(guide);
+        validateWorkGuide_(guide);
+        const ledgerErrors = assessGuideAgainstLedger_(guide, data.ledger);
+        if (ledgerErrors.length) throw new AppError('VALIDATION_ERROR', '生成ガイドが知識台帳と一致しません。', { errors: ledgerErrors });
+        return guide;
       }
     });
     const reviewed = runAiJsonTask_({
-      prompt: buildWorkGuideAutoReviewPrompt_(context, generated.value),
+      prompt: buildWorkGuideAutoReviewPrompt_(Object.assign({}, sourceContext, {
+        skeleton: data.skeleton,
+        confirmedLedger: guideContext.confirmedEntries,
+        deferredLedger: guideContext.deferredEntries
+      }), generated.value),
       phase: 'work_guide_review_revision',
       conversationId: generated.conversationId,
       meta: { meetingId: meeting.meetingId, actionId: action.actionId, buildSessionId: session.buildSessionId },
-      validator: function (value) { return validateAutoReviewResult_(value, generated.value); }
+      validator: function (value) {
+        const validated = validateAutoReviewResult_(value, generated.value);
+        const ledgerErrors = assessGuideAgainstLedger_(validated.workGuide, data.ledger);
+        if (ledgerErrors.length) throw new AppError('VALIDATION_ERROR', 'AI検収後のガイドが知識台帳と一致しません。', { errors: ledgerErrors });
+        return validated;
+      }
     });
     reviewedValue = reviewed.value;
     conversationId = generated.conversationId;
-    // 具体度チェック: 抽象的な手順が残る間は、上限回数まで生成AIへ追加修正を依頼する。
-    for (let depthRound = 1; depthRound <= APP_CONFIG.workGuideDepth.maxAutoRefinements; depthRound += 1) {
-      const depthFindings = assessWorkGuideDepth_(reviewedValue.workGuide);
-      if (!depthFindings.length) break;
-      const deepened = runAiJsonTask_({
-        prompt: buildWorkGuideDepthCheckPrompt_(reviewedValue.workGuide, depthFindings),
-        phase: 'work_guide_depth_refinement',
-        conversationId: conversationId,
-        meta: { meetingId: meeting.meetingId, actionId: action.actionId, buildSessionId: session.buildSessionId },
-        validator: function (guide) {
-          guide.workGuideId = '';
-          guide.version = 1;
-          guide.schemaVersion = APP_CONFIG.schemaVersion;
-          guide.sourceSnapshots = JSON.parse(JSON.stringify(data.selectedSources));
-          return validateWorkGuide_(guide);
-        }
+    // 机上実行レビュー（P4）: 生成・検収とは別コンテキストの「初見の作業者」に通し読みさせる。
+    // 自動経路では人へ質問できないため、詰まりは「作業前に確認」へ自動降格し、残存リスクに記録する。
+    const deskReviewed = runAiJsonTask_({
+      prompt: buildDeskReviewPrompt_(reviewedValue.workGuide, { jsonOnly: true }),
+      phase: 'desk_review',
+      meta: { meetingId: meeting.meetingId, actionId: action.actionId, buildSessionId: session.buildSessionId },
+      validator: function (value) { return validateDeskReviewResult_(value); }
+    });
+    if (deskReviewed.value.findings.length) {
+      const deskFindings = deskReviewed.value.findings.map(function (finding) {
+        finding.stepRef = resolveDeskReviewStepRef_(data, finding.stepRef);
+        return finding;
       });
-      reviewedValue.workGuide = deepened.value;
-      reviewedValue.review.changesMade = reviewedValue.review.changesMade.concat(['具体度チェック' + depthRound + '回目: ' + depthFindings.length + '件の不足を修正']);
+      const deskLedger = applyLedgerDiff_(data.ledger, deskFindings.map(function (finding) {
+        return {
+          stepRef: finding.stepRef,
+          slot: finding.slot,
+          claim: finding.claim,
+          confidence: 'unknown',
+          deferred: true,
+          evidence: { type: 'ai_knowledge', ref: '全自動の机上実行レビュー', quote: '' }
+        };
+      }));
+      data.ledger = deskLedger.entries;
+      data.ledger.forEach(function (entry) {
+        if (entry.confidence !== 'confirmed') entry.deferred = true;
+      });
+      applyDeskReviewFindingsToGuide_(reviewedValue.workGuide, deskFindings);
+      reviewedValue.review.remainingRisks = reviewedValue.review.remainingRisks.concat(deskFindings.map(function (finding) {
+        return '机上実行レビュー[' + finding.type + ']' + (finding.stepRef ? ' ' + finding.stepRef : '') + ': ' + finding.claim + '（作業前に確認へ降格）';
+      }));
+      reviewedValue.review.changesMade = reviewedValue.review.changesMade.concat(['机上実行レビューの詰まり' + deskFindings.length + '件を前提条件「作業前に確認」へ降格']);
+      pushLedgerAudit_(data, 'desk_review', '全自動の机上実行レビュー' + deskFindings.length + '件を作業前確認へ降格');
     }
     const remainingDepthFindings = assessWorkGuideDepth_(reviewedValue.workGuide);
     if (remainingDepthFindings.length) {
@@ -298,7 +358,18 @@ function automateActionGuide_(action) {
     }
     data.importedWorkGuide = reviewedValue.workGuide;
     data.autoReview = reviewedValue.review;
-    updateAutomaticWorkGuideBuild_(session.buildSessionId, 10, data);
+    data.deskReview = {
+      passed: deskReviewed.value.findings.length === 0,
+      findings: deskReviewed.value.findings.map(function (finding) {
+        finding.stepRef = resolveDeskReviewStepRef_(data, finding.stepRef);
+        return finding;
+      }),
+      trace: deskReviewed.value.trace,
+      at: nowIso_()
+    };
+    const finalLedgerErrors = assessGuideAgainstLedger_(reviewedValue.workGuide, data.ledger);
+    assertApp_(!finalLedgerErrors.length, 'LEDGER_MISMATCH', '机上実行レビュー後のガイドが知識台帳と一致しません。', { errors: finalLedgerErrors });
+    updateAutomaticWorkGuideBuild_(session.buildSessionId, 9, data);
   }
   const saved = saveWorkGuide({
     requestToken: 'auto-' + action.actionId + '-initial',

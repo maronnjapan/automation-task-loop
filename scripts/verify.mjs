@@ -21,7 +21,7 @@ for (const file of htmlFiles) {
 }
 
 const context = vm.createContext({
-  console,
+  console: { log: console.log, warn: console.warn, error() {} },
   URL,
   LockService: {
     getScriptLock() {
@@ -81,16 +81,26 @@ assert.equal(vm.runInContext('parsePastedJson_("```json\\n{\\\"ok\\\":true}\\n``
 assert.equal(vm.runInContext('buildWorkGuideAutoReviewPrompt_({allowedScripts:[]}, validGuide).includes("厳格な検収者")', context), true);
 context.promptMeeting = { meetingId: 'MTG-PROMPT', title: '確認会議', category: '定例', meetingEndedAt: '2026-07-21T00:00:00.000Z' };
 context.approvedMeetingReview = '# 会議内容の確認案\n## 5. 作成を検討する作業ガイド\n公開準備を行う';
-context.approvedGuidePlan = '# 作業ガイド設計案\n## 3. 必要な具体作業\n1. 公開内容を確認する';
 assert.equal(vm.runInContext('buildMeetingAnalysisReviewPrompt_(promptMeeting, "文字起こし").includes("この段階ではアプリ用JSONを作りません")', context), true);
 assert.equal(vm.runInContext('buildMeetingAnalysisJsonPrompt_(promptMeeting, "文字起こし", approvedMeetingReview).includes(approvedMeetingReview)', context), true);
-assert.equal(vm.runInContext('buildWorkGuidePlanPrompt_({action:{title:"公開準備"}}).includes("必要な具体作業")', context), true);
-assert.equal(vm.runInContext('buildWorkGuidePrompt_({action:{title:"公開準備"}, selectedSources:[], workGuideId:"", version:1}, approvedGuidePlan).includes(approvedGuidePlan)', context), true);
-assert.equal(vm.runInContext('buildWorkGuidePlanPrompt_({action:{title:"公開準備"}}).includes("作業ガイドの品質基準")', context), true, 'Plan prompts must demand setup-script level concreteness');
-assert.equal(vm.runInContext('buildWorkGuidePlanPrompt_({action:{title:"公開準備"}}).includes("まだ具体化できていない点と質問")', context), true, 'Plan prompts must surface open questions for the human loop');
-assert.equal(vm.runInContext('buildWorkGuidePlanRefinePrompt_({action:{title:"公開準備"}}, approvedGuidePlan, "手順3のURLを追記").includes(approvedGuidePlan)', context), true, 'Refine prompts must carry the current plan');
-assert.equal(vm.runInContext('buildWorkGuidePlanRefinePrompt_({action:{title:"公開準備"}}, approvedGuidePlan, "手順3のURLを追記").includes("手順3のURLを追記")', context), true, 'Refine prompts must carry the human feedback');
-assert.equal(vm.runInContext('buildWorkGuidePrompt_({action:{title:"公開準備"}, selectedSources:[], workGuideId:"", version:1}, approvedGuidePlan).includes("作業ガイドの品質基準")', context), true);
+context.ledgerPromptContext = {
+  action: { title: '公開準備' },
+  skeleton: { purpose: '公開する', completion: '公開済み表示', steps: [{ skeletonId: 'SK-1', title: '公開する' }], outOfScope: [] },
+  ledger: [],
+  confirmedEntries: [],
+  deferredEntries: [],
+  selectedSources: [],
+  allowedScripts: [],
+  workGuideId: '',
+  version: 1
+};
+assert.equal(vm.runInContext('buildGuideSkeletonPrompt_(ledgerPromptContext).includes("骨格と事実台帳のJSON")', context), true, 'P1 must initialize the skeleton and ledger');
+assert.equal(vm.runInContext('buildGuideSkeletonPrompt_(ledgerPromptContext, {jsonOnly:true}).includes("コードブロックや説明文は禁止")', context), true, 'Automatic P1 must request JSON only');
+assert.equal(vm.runInContext('buildLedgerInterviewPrompt_(ledgerPromptContext, "").includes("## 6. 次の質問（最大5問）")', context), true, 'P2 must have the fixed six-section interview format');
+assert.equal(vm.runInContext('buildLedgerInterviewPrompt_(ledgerPromptContext, "").includes("画面の文言をコピーして貼ってください")', context), true, 'P2 must ask for artifacts rather than recollection');
+assert.equal(vm.runInContext('buildLedgerGuidePrompt_(ledgerPromptContext).includes("confidence: confirmed")', context), true, 'P3 must use confirmed ledger facts only');
+assert.equal(vm.runInContext('buildLedgerGuidePrompt_(ledgerPromptContext).includes("作業前に確認へ降格されたエントリ")', context), true, 'P3 must serialize deferred entries into prerequisites');
+assert.equal(vm.runInContext('buildDeskReviewPrompt_(validGuide).includes("MISSING_INFO")', context), true, 'P4 must review the guide as a first-time operator');
 assert.equal(vm.runInContext('buildWorkGuideRevisionPrompt_(validGuide, "指摘").includes("作業ガイドの品質基準")', context), true);
 const deepGuide = structuredClone(validGuide);
 deepGuide.warnings = ['公開の取り消しはできないため、保存前にプレビューで最終確認する'];
@@ -122,11 +132,47 @@ assert.equal(vm.runInContext('repairTestCalls[1].prompt.includes("okはtrueで�
 
 context.nowIso_ = () => '2026-07-21T00:00:00.000Z';
 context.getFileSafely_ = () => ({ getLastUpdated() { return new Date('2026-07-21T00:00:00.000Z'); } });
+vm.runInContext(readFileSync(resolve(projectRoot, 'KnowledgeLedgerService.gs'), 'utf8'), context, { filename: 'KnowledgeLedgerService.gs' });
 vm.runInContext(readFileSync(resolve(projectRoot, 'WorkGuideExecutionService.gs'), 'utf8'), context, { filename: 'WorkGuideExecutionService.gs' });
 vm.runInContext(readFileSync(resolve(projectRoot, 'SpreadsheetService.gs'), 'utf8'), context, { filename: 'SpreadsheetService.gs' });
 vm.runInContext(readFileSync(resolve(projectRoot, 'QuizService.gs'), 'utf8'), context, { filename: 'QuizService.gs' });
 vm.runInContext(readFileSync(resolve(projectRoot, 'WorkGuideBuildService.gs'), 'utf8'), context, { filename: 'WorkGuideBuildService.gs' });
 vm.runInContext(readFileSync(resolve(projectRoot, 'AiAutomationWorkflowService.gs'), 'utf8'), context, { filename: 'AiAutomationWorkflowService.gs' });
+vm.runInContext(`
+  var ledgerNormalized = normalizeSkeletonLedgerResult_({
+    skeleton: { purpose: '公開する', completion: '保存済み表示', steps: [{ skeletonId: 'SK-1', title: '公開内容を保存する' }], outOfScope: [] },
+    ledger: [
+      { entryId: 'L-001', stepRef: 'SK-1', slot: 'url', claim: '編集画面URL', value: 'https://example.com/item', evidence: { type: 'transcript', ref: '会議', quote: '編集画面を開く' }, confidence: 'confirmed' },
+      { entryId: 'L-002', stepRef: 'SK-1', slot: 'ui_label', claim: '保存ボタン', value: '', evidence: { type: 'transcript', ref: '会議', quote: '' }, confidence: 'confirmed' },
+      { entryId: 'L-003', stepRef: 'SK-1', slot: 'input_value', claim: '入力値', value: '公開', evidence: { type: 'ai_knowledge', ref: '一般知識', quote: '' }, confidence: 'confirmed' }
+    ]
+  });
+  var ledgerWithMissing = materializeMissingLedgerEntries_(ledgerNormalized.skeleton, ledgerNormalized.entries, false, 'test');
+  ledgerWithMissing.forEach(function (entry) { if (entry.confidence !== 'confirmed') entry.deferred = true; });
+  var ledgerReadiness = computeLedgerReadiness_(ledgerNormalized.skeleton, ledgerWithMissing);
+`, context);
+assert.equal(vm.runInContext('ledgerNormalized.entries[1].confidence', context), 'unknown', 'Confirmed ledger facts must have a value');
+assert.equal(vm.runInContext('ledgerNormalized.entries[2].confidence', context), 'assumed', 'AI knowledge cannot become confirmed without human evidence');
+assert.equal(vm.runInContext('ledgerWithMissing.length', context), 9, 'Every skeleton step must have all ledger slots materialized');
+assert.equal(vm.runInContext('ledgerReadiness.gatePassed', context), true, 'Explicitly deferred unknown slots must pass the readiness gate');
+context.groundedLedger = [
+  { entryId: 'L-001', stepRef: 'SK-1', slot: 'url', claim: '編集画面URL', value: 'https://example.com/item', evidence: { type: 'transcript', quote: '' }, confidence: 'confirmed' },
+  { entryId: 'L-002', stepRef: 'SK-1', slot: 'ui_label', claim: '画面表記', value: '「編集」「保存」', evidence: { type: 'user_answer', quote: '' }, confidence: 'confirmed' },
+  { entryId: 'L-003', stepRef: 'SK-1', slot: 'verification', claim: '完了表示', value: '「保存しました」', evidence: { type: 'artifact', quote: '' }, confidence: 'confirmed' },
+  { entryId: 'L-004', stepRef: 'SK-1', slot: 'failure_recovery', claim: '失敗時', value: '編集権限を確認する', evidence: { type: 'user_answer', quote: '' }, confidence: 'confirmed' },
+  { entryId: 'L-005', stepRef: 'SK-1', slot: 'scope', claim: '変更範囲', value: '公開状態は変わらない', evidence: { type: 'transcript', quote: '' }, confidence: 'confirmed' },
+  { entryId: 'L-006', stepRef: 'SK-1', slot: 'precondition', claim: '担当者に確認', value: '', evidence: { type: 'user_answer', quote: '' }, confidence: 'unknown', deferred: true }
+];
+context.groundedGuide = structuredClone(deepGuide);
+context.groundedGuide.prerequisites.push('作業前に確認: 担当者に確認');
+context.groundedGuide.steps[0].scopeNote = '公開状態は変わらない';
+context.groundedGuide.steps[0].verification = { method: 'visual', detail: '「保存しました」と表示される' };
+context.groundedGuide.steps[0].failureRecovery = { checks: ['編集権限を確認する'], resumeFrom: 'S1' };
+context.groundedGuide.steps[0].evidenceRefs = ['L-001', 'L-002', 'L-003', 'L-004', 'L-005'];
+assert.equal(vm.runInContext('assessGuideAgainstLedger_(groundedGuide, groundedLedger).length', context), 0, 'Grounded guide facts must pass ledger reconciliation');
+context.ungroundedGuide = structuredClone(context.groundedGuide);
+context.ungroundedGuide.steps[0].url = 'https://invented.example/path';
+assert.equal(vm.runInContext('assessGuideAgainstLedger_(ungroundedGuide, groundedLedger).some(function (item) { return item.indexOf("出典不明") >= 0; })', context), true, 'Invented URLs must be rejected');
 assert.equal(vm.runInContext('buildPreflight_(validGuide, {status:"needs_review"}).level', context), 'unavailable');
 assert.equal(vm.runInContext('isActionAutoGuideRequired_({guideRecommended:true})', context), true);
 assert.equal(vm.runInContext('isActionAutoGuideRequired_({guideRecommended:false})', context), false);
@@ -247,35 +293,55 @@ assert.equal(vm.runInContext('passedQuizResult.passed', context), true);
 assert.equal(vm.runInContext('quizTestUpdates[1].updates.status', context), 'completed');
 
 const allHtml = htmlFiles.map((file) => readFileSync(resolve(projectRoot, file), 'utf8')).join('\n');
-for (const id of ['ai-api-key', 'ai-auto-enabled', 'manual-guide-create-button', 'copy-analysis-prompt-button', 'analysis-review', 'analysis-review-confirm', 'analysis-json-prompt', 'guide-plan-prompt', 'guide-plan', 'guide-plan-confirm', 'plan-refine-feedback', 'guide-prompt', 'copy-guide-prompt-button', 'guide-json-import', 'guide-depth-findings', 'copy-revision-prompt-button', 'cancel-guide-build-button', 'guide-review-actions', 'guide-ai-history', 'quiz-ai-history']) {
+for (const id of [
+  'ai-api-key', 'ai-auto-enabled', 'manual-guide-create-button', 'copy-analysis-prompt-button', 'analysis-review', 'analysis-review-confirm', 'analysis-json-prompt',
+  'skeleton-prompt', 'skeleton-import', 'interview-prompt', 'interview-reply', 'interview-questions', 'ledger-heatmap', 'ledger-open-entries', 'gate-confirm',
+  'guide-prompt', 'copy-guide-prompt-button', 'guide-json-import', 'desk-review-prompt', 'desk-review-reply', 'guide-depth-findings',
+  'copy-revision-prompt-button', 'cancel-guide-build-button', 'guide-review-actions', 'guide-ai-history', 'quiz-ai-history'
+]) {
   assert.match(allHtml, new RegExp(`id=["']${id}["']`), `UI element #${id} is missing`);
 }
 assert.match(allHtml, /data-view=["']actions["'][^>]*>ガイド作成</, 'Manual guide creation must remain in the main navigation');
 assert.match(allHtml, /App\.copyText\(["']guide-prompt["']\)/, 'Manual guide prompts must be copyable without opening a specific AI service');
 assert.match(allHtml, /App\.prepareAnalysisJsonPrompt\(\)/, 'Meeting JSON generation must be gated by the human-readable review');
-assert.match(allHtml, /App\.prepareGuidePlanPrompt\(\)/, 'Work guide JSON generation must start with a human-readable plan');
-assert.match(allHtml, /App\.preparePlanRefinePrompt\(\)/, 'Plan refinement loop must be reachable from STEP 7');
-assert.match(allHtml, /App\.prepareDepthCheckPrompt\(\)/, 'Depth check loop must be reachable from STEP 9');
+assert.match(allHtml, /App\.prepareSkeletonPrompt\(\)/, 'P1 skeleton and ledger initialization must be reachable');
+assert.match(allHtml, /App\.prepareInterviewPrompt\(\)/, 'P2 interview loop must be reachable');
+assert.match(allHtml, /App\.deferAllOpenEntries\(\)/, 'The readiness gate must support explicit deferral');
+assert.match(allHtml, /App\.prepareDeskReviewPrompt\(\)/, 'P4 desk review must be reachable');
+assert.match(allHtml, /App\.recordExternalReference\(\)/, 'Execution feedback must be reachable from each step');
+assert.match(allHtml, /App\.prepareDepthCheckPrompt\(\)/, 'Depth check loop must remain reachable from review');
 const config = readFileSync(resolve(projectRoot, 'Config.gs'), 'utf8');
-for (const required of ['AiInteractions', 'aiInteractionLogs', 'automationStatus', 'autoReviewJson', 'workGuideDepth']) {
+for (const required of ['AiInteractions', 'aiInteractionLogs', 'automationStatus', 'autoReviewJson', 'workGuideDepth', 'ledgerInterview']) {
   assert.match(config, new RegExp(required), `Configuration ${required} is missing`);
 }
 const distCode = readFileSync(resolve(projectRoot, 'dist/Code.gs'), 'utf8');
 const firstDistSection = distCode.match(/^\/\/ ===== (.+\.gs) =====$/m);
 assert.equal(firstDistSection && firstDistSection[1], 'Config.gs', 'User configuration must be the first section in dist/Code.gs');
+assert.match(distCode, /\/\/ ===== KnowledgeLedgerService\.gs =====/, 'dist/Code.gs must include the knowledge ledger implementation');
+const distHtml = readFileSync(resolve(projectRoot, 'dist/Index.html'), 'utf8');
+assert.match(distHtml, /id="ledger-heatmap"/, 'dist/Index.html must include the readiness heatmap');
+assert.match(distHtml, /recordExternalReference/, 'dist/Index.html must include execution feedback wiring');
 const workGuideService = readFileSync(resolve(projectRoot, 'WorkGuideService.gs'), 'utf8');
 assert.match(workGuideService, /function approveWorkGuide\(/, 'Approval endpoint is missing');
 assert.match(workGuideService, /guideNeedsReview/, 'Generated guides must support needs_review state');
 assert.match(workGuideService, /requirePassedQuizForMeeting_\(action\.meetingId\)/, 'Work guide saves must enforce the meeting quiz gate');
+assert.match(workGuideService, /assessGuideAgainstLedger_/, 'Final saves must re-check the guide against the ledger');
+assert.match(workGuideService, /DESK_REVIEW_REQUIRED/, 'Manual saves must require a completed desk review');
 const workGuideBuildService = readFileSync(resolve(projectRoot, 'WorkGuideBuildService.gs'), 'utf8');
 assert.match(workGuideBuildService, /requirePassedQuizForMeeting_\(action\.meetingId\)/, 'Work guide builds must enforce the meeting quiz gate');
 assert.match(workGuideBuildService, /MANUAL_BUILD_IN_PROGRESS/, 'Automatic generation must not take over an active manual build');
-assert.match(workGuideBuildService, /GUIDE_PLAN_REQUIRED/, 'New manual guide JSON imports must require an approved human-readable plan');
-assert.match(workGuideBuildService, /function prepareWorkGuidePlanRefinePrompt\(/, 'Plan refinement endpoint is missing');
+assert.match(workGuideBuildService, /function prepareGuideSkeletonPrompt\(/, 'P1 endpoint is missing');
+assert.match(workGuideBuildService, /function prepareLedgerInterviewPrompt\(/, 'P2 endpoint is missing');
+assert.match(workGuideBuildService, /function prepareDeskReviewPrompt\(/, 'P4 endpoint is missing');
+assert.match(workGuideBuildService, /GATE_NOT_PASSED/, 'Guide import must require the readiness gate');
 assert.match(workGuideBuildService, /function prepareWorkGuideDepthCheckPrompt\(/, 'Depth check endpoint is missing');
 assert.match(workGuideBuildService, /function cancelWorkGuideBuild\(/, 'Open guide builds must be cancellable');
 assert.match(workGuideBuildService, /guide_not_required/, 'Cancelled guide builds must be removed from guide targets');
+const automationService = readFileSync(resolve(projectRoot, 'AiAutomationWorkflowService.gs'), 'utf8');
+assert.match(automationService, /phase: 'ledger_init'/, 'Automatic guide creation must initialize a ledger');
+assert.match(automationService, /buildLedgerGuidePrompt_/, 'Automatic guide creation must serialize from the ledger');
+assert.match(automationService, /phase: 'desk_review'/, 'Automatic guide creation must perform P4 desk review');
 const actionService = readFileSync(resolve(projectRoot, 'ActionService.gs'), 'utf8');
 assert.match(actionService, /status\) !== 'guide_not_required'/, 'Removed guide targets must not reappear in the candidate list');
 
-console.log(`Verified ${gasFiles.length} GAS files, ${htmlFiles.length} HTML files, validators, manual/API guide creation, quiz-gated parallel queues, prompts, API parsing, and review UI wiring.`);
+console.log(`Verified ${gasFiles.length} GAS files, ${htmlFiles.length} HTML files, ledger invariants, interview/readiness gates, manual/API guide creation, desk review, execution feedback, and dist wiring.`);

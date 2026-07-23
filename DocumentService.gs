@@ -28,6 +28,7 @@ function createWorkGuideDocument_(guide) {
   body.appendParagraph('作業手順').setHeading(DocumentApp.ParagraphHeading.HEADING1);
   guide.steps.slice().sort(function (a, b) { return a.order - b.order; }).forEach(function (step) {
     body.appendParagraph(step.order + '. ' + step.title).setHeading(DocumentApp.ParagraphHeading.HEADING2);
+    if (step.scopeNote) body.appendParagraph('このステップで変わらないこと: ' + step.scopeNote);
     body.appendParagraph(step.description);
     if (step.url) body.appendParagraph('URL: ' + step.url);
     if (step.inputs && step.inputs.length) {
@@ -36,6 +37,13 @@ function createWorkGuideDocument_(guide) {
     }
     if (step.type === 'script') body.appendParagraph('登録スクリプト: ' + step.scriptId);
     body.appendParagraph('完了条件: ' + step.completionCriteria).editAsText().setBold(true);
+    if (step.verification && step.verification.detail) body.appendParagraph('完了確認（' + (step.verification.method || 'visual') + '）: ' + step.verification.detail);
+    if (step.failureRecovery && step.failureRecovery.checks && step.failureRecovery.checks.length) {
+      body.appendParagraph('失敗した場合に確認する点:');
+      step.failureRecovery.checks.forEach(function (check) { body.appendListItem(check); });
+      if (step.failureRecovery.resumeFrom) body.appendParagraph('やり直す手順: ' + step.failureRecovery.resumeFrom);
+    }
+    if (step.evidenceRefs && step.evidenceRefs.length) body.appendParagraph('根拠台帳エントリ: ' + step.evidenceRefs.join(', '));
     if (step.sourceReferences && step.sourceReferences.length) body.appendParagraph('参照資料ID: ' + step.sourceReferences.join(', '));
   });
   document.saveAndClose();

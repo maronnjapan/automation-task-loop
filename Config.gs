@@ -56,11 +56,17 @@ const APP_CONFIG = Object.freeze({
   }),
   defaultAiMaxRepairAttempts: 1,
   // 作業ガイドの具体度チェック。しきい値未満の手順は「抽象的すぎる」として指摘し、
-  // 生成AIとの追加往復（手動: 具体度チェックプロンプト / 全自動: 追加修正）を促す。
+  // 生成AIとの追加往復（手動: 具体度チェックプロンプト）を促す。
   workGuideDepth: Object.freeze({
     minDescriptionLength: 40,
-    minCompletionCriteriaLength: 16,
-    maxAutoRefinements: 2
+    minCompletionCriteriaLength: 16
+  }),
+  // 知識台帳の取材ループ（GUIDE_DEEPDIVE_DESIGN §5）。1ラウンドの質問上限と、
+  // 準備度スコアが増えないまま続いたら降格を提案するラウンド数。
+  ledgerInterview: Object.freeze({
+    maxQuestionsPerRound: 5,
+    maxAnswerCharacters: 20000,
+    stagnantRoundsBeforeDemotionHint: 2
   }),
   automationTimeBudgetMs: 240000,
   managementSchemaVersion: '2026-07-ai-automation-v1'

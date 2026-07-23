@@ -79,6 +79,27 @@ function saveExecutionStep(executionId, inputValues, scriptParams) {
   });
 }
 
+// 実行フィードバック（GUIDE_DEEPDIVE_DESIGN §9.1）: 「ガイドのみで作業が完了する」の成功基準を
+// そのまま改善入力にする。ガイド外の資料を見た・人に聞いた事実を1行で記録し、
+// 次バージョン作成時の取材ループの初期質問リストへ還流する。
+function recordExecutionExternalReference(executionId, stepId, note) {
+  return withClientError_(function () {
+    const execution = requireExecution_(executionId);
+    assertApp_([APP_CONFIG.statuses.executionInProgress, APP_CONFIG.statuses.executionPaused].indexOf(String(execution.status)) >= 0, 'EXECUTION_CLOSED', 'この実行は完了済みです。');
+    assertApp_(nonEmptyString_(note), 'VALIDATION_ERROR', '何を調べたか・誰に聞いたかを1行で入力してください。');
+    assertApp_(note.trim().length <= 500, 'VALIDATION_ERROR', 'ガイド外参照の記録は500文字以内にしてください。');
+    const versionNo = Number(String(execution.workGuideVersionId).split('-V').pop());
+    const guide = getWorkGuideOrThrow_(execution.workGuideId, versionNo).guide;
+    assertApp_(guide.steps.some(function (step) { return String(step.stepId) === String(stepId); }), 'STEP_NOT_FOUND', '記録対象の手順が作業ガイドにありません。');
+    const data = parseJsonCell_(execution.executionDataJson, { stepData: {}, completedStepIds: [], scriptResults: {} });
+    data.externalReferences = (Array.isArray(data.externalReferences) ? data.externalReferences : []).concat([{
+      stepId: nonEmptyString_(stepId) ? String(stepId) : '', note: note.trim(), at: nowIso_()
+    }]);
+    updateRow_('WorkGuideExecutions', execution._rowNumber, { executionDataJson: data });
+    return { success: true, executionData: data, count: data.externalReferences.length };
+  });
+}
+
 function pauseWorkGuideExecution(executionId, notes) {
   return withClientError_(function () {
     const execution = requireExecution_(executionId);

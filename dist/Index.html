@@ -102,6 +102,21 @@
   .json-stage { margin-top: 1rem; padding-top: 1rem; border-top: 2px solid var(--primary-soft); }
   .plan-refine { margin: 1rem 0; padding: 1rem; border: 1px dashed var(--line); border-radius: 12px; background: #f9fbfc; }
   .plan-refine > strong { display: block; margin-bottom: .35rem; }
+  .desk-review { margin: 1rem 0; padding: 1rem; border: 1px solid #bfd7ea; border-radius: 12px; background: #f4f9fd; }
+  .desk-review > strong { display: block; margin-bottom: .35rem; }
+  .ledger-question { margin: .9rem 0; padding: 1rem; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+  .lq-text { line-height: 1.65; }
+  .lq-options { display: flex; flex-wrap: wrap; gap: .35rem 1rem; margin: .75rem 0; }
+  .heatmap-wrap { margin: .8rem 0; overflow-x: auto; }
+  .heatmap { width: 100%; min-width: 760px; border-collapse: collapse; font-size: .88rem; }
+  .heatmap th, .heatmap td { padding: .55rem .45rem; border: 1px solid var(--line); text-align: center; }
+  .heatmap tbody th { min-width: 180px; text-align: left; background: #f7f9fb; }
+  .heatmap td { font-size: 1.15rem; font-weight: 700; }
+  .hm-confirmed { color: #147a45; background: #e8f7ef; }
+  .hm-assumed { color: #9b6500; background: #fff4cf; }
+  .hm-unknown { color: #b13b36; background: #fdebea; }
+  .hm-deferred { color: #59636e; background: #eef1f4; }
+  .hm-missing { color: #9aa3ad; background: #fafbfc; }
   .notice.warning ul { margin: .35rem 0 0 1.2rem; }
   .draft-preview h4 { margin: 0 0 .35rem; }
   .draft-preview h5 { margin: .8rem 0 .3rem; }
@@ -257,20 +272,21 @@
 <!-- ===== END ActionView.html ===== -->
       <!-- ===== BEGIN WorkGuideBuildView.html ===== -->
 <section id="view-builder" class="view">
-  <div class="page-heading"><div><p class="eyebrow">MANUAL GUIDE CREATION</p><h2>生成AIとやりとりして作業ガイドを作成</h2></div><div class="button-row"><span id="build-session-label" class="meta"></span><button id="cancel-guide-build-button" class="danger" onclick="App.cancelBuild()">このガイドは不要</button><button class="secondary" onclick="App.showView('actions')">← 候補選択へ戻る</button></div></div>
+  <div class="page-heading"><div><p class="eyebrow">MANUAL GUIDE CREATION</p><h2>取材ループで事実を集めて作業ガイドを作成</h2></div><div class="button-row"><span id="build-session-label" class="meta"></span><button id="cancel-guide-build-button" class="danger" onclick="App.cancelBuild()">このガイドは不要</button><button class="secondary" onclick="App.showView('actions')">← 候補選択へ戻る</button></div></div>
   <div id="builder-empty" class="notice info">作業候補画面から、必要な候補の「ガイド作成」を押してください。</div>
   <div id="builder-workspace" class="hidden">
-    <div class="notice info"><strong>この作成方法ではアプリから生成AI APIを呼び出しません。</strong><br>プロンプトをコピーして任意の生成AIとやりとりし、返ってきたJSONを貼り付けてください。API自動生成の設定に関係なく利用できます。</div>
+    <div class="notice info"><strong>この作成方法ではアプリから生成AI APIを呼び出しません。</strong><br>プロンプトをコピーして任意の生成AIとやりとりし、返ってきた回答を貼り付けてください。ガイドの品質は文章力ではなく「集まった事実の量と確度」で決まるため、書き直しではなく取材（質問への回答・現物の貼り付け）で事実を集めます。</div>
     <ol id="builder-stepper" class="stepper"></ol>
     <article class="panel"><h3>STEP 1 作業候補を確認する</h3><div id="builder-action"></div><p class="muted">作成を進めてから不要だと分かった場合は、画面上部の「このガイドは不要」で作成を中止し、ガイド対象から削除できます。</p></article>
-    <article class="panel"><h3>STEP 2 現在分かっている前提条件を確認する</h3><label>1行に1件<textarea id="known-prerequisites" rows="4"></textarea></label></article>
-    <article class="panel"><h3>STEP 3–4 AIが整理した不足条件へ回答する</h3><p class="muted">会議解析のAI回答で作られた質問です。これによりAI往復を基本2回に保ちます。</p><div id="prerequisite-questions"></div></article>
-    <article class="panel"><h3>STEP 5–6 過去資料を検索・選択する</h3><div class="inline-form"><label>Drive検索<input id="source-query" minlength="2"></label><button onclick="App.searchSources()">検索</button></div><div id="source-results" class="item-list"></div></article>
-    <article class="panel"><h3>STEP 7 ガイドの目的と具体作業を合わせてからJSON化する</h3><p class="muted">最初に人が読むための設計案を作ります。内容を確認・修正して承認するまで、アプリ用JSONは作りません。</p><button onclick="App.prepareGuidePlanPrompt()">設計案プロンプトを作成</button><label>人が読む設計案のプロンプト<textarea id="guide-plan-prompt" rows="10" readonly></textarea></label><div class="button-row"><button id="copy-guide-plan-prompt-button" onclick="App.copyText('guide-plan-prompt')">設計案プロンプトをコピー</button></div><label>生成AIの作業ガイド設計案（内容を直接修正できます）<textarea id="guide-plan" class="human-readable" rows="16" placeholder="何をするガイドか、完了状態、必要な具体作業などを貼り付け"></textarea></label><div class="plan-refine"><strong>設計案の深掘り（納得いくまで何度でも）</strong><p class="muted">一度で理想の粒度にならなくても構いません。AIの質問への回答や、もっと具体化してほしい点を書いて深掘りプロンプトを作り、生成AIの改善版設計案を上の欄へ貼り直してください。各作業に「開く画面のURL・押すボタンの名称・入力する値・完了確認・失敗時の対処」が書かれるまで繰り返します。</p><label>AIの質問への回答・追加情報・具体化してほしい点（任意）<textarea id="plan-refine-feedback" rows="4" placeholder="例: 対象の管理画面は https://example.com/admin。手順3で入力する値の形式が分からないので、調べ方も書いてほしい"></textarea></label><button class="secondary" onclick="App.preparePlanRefinePrompt()">深掘りプロンプトを作成（上の設計案プロンプト欄が置き換わります）</button></div><div class="review-gate"><strong>JSON化する前の確認</strong><ul><li>ガイドの目的と完了状態が明確になっている</li><li>必要な作業が実行順に具体化され、各作業に開く画面・操作・入力値・完了確認・失敗時の対処が書かれている</li><li>前提条件・注意点・今回含めない範囲が認識と合っている</li></ul><label class="check-line"><input id="guide-plan-confirm" type="checkbox"> この設計案の方向性で作業ガイドJSONを作成します</label><button onclick="App.prepareGuidePrompt()">この方向性でJSON用プロンプトを作成</button></div><div id="guide-json-prompt-stage" class="json-stage hidden"><label>ガイドJSON生成プロンプト<textarea id="guide-prompt" rows="10" readonly></textarea></label><div class="button-row"><button id="copy-guide-prompt-button" onclick="App.copyText('guide-prompt')">JSON生成プロンプトをコピー</button></div><p class="meta">コピー後、お使いの生成AIへ貼り付け、返ってきたJSONを STEP 8 へ貼り付けてください。</p></div></article>
-    <article class="panel"><h3>STEP 8 生成AIの回答JSONを取り込む</h3><p class="muted">生成AIから返された回答を、そのままここへ貼り付けます。初回回答もレビュー後の修正版も同じ欄を使います。</p><label>生成AIの回答<textarea id="guide-json-import" rows="10" placeholder="生成AIが返したJSONを貼り付け"></textarea></label><button onclick="App.importGuide()">検証して取り込む</button><div id="guide-import-validation" class="validation-box hidden"></div></article>
-    <article id="guide-review-panel" class="panel hidden"><h3>STEP 9 ドラフトを確認・生成AIと再調整する</h3><p class="muted">取り込んだドラフトを確認します。アプリの具体度チェックが「開く画面・操作・入力値・完了確認」の不足を検出したら、具体度チェックプロンプトで生成AIに点検・修正させてください。直したい点があればレビュー指摘から修正プロンプトも作れます。どちらも修正版JSONは STEP 8 へ貼り直し、理想の粒度になるまで何度でも往復できます。納得できたら STEP 10 の編集へ進みます。</p><div id="guide-draft-preview" class="draft-preview"></div><div id="guide-depth-findings"></div><div class="button-row"><button class="secondary" onclick="App.prepareDepthCheckPrompt()">具体度チェックプロンプトを作成（AIに不足を点検・修正させる）</button></div><label>レビュー指摘（修正してほしい点を具体的に）<textarea id="review-feedback" rows="4" placeholder="例: S2 の本文例が硬すぎるので、もう少し柔らかい文面にしてほしい"></textarea></label><button onclick="App.prepareRevisionPrompt()">修正プロンプトを作成</button><label>修正プロンプト<textarea id="revision-prompt" rows="8" readonly></textarea></label><button id="copy-revision-prompt-button" onclick="App.copyText('revision-prompt')">修正プロンプトをコピー</button></article>
-    <article id="guide-editor-panel" class="panel hidden"><h3>STEP 10 編集・確認</h3><div id="guide-editor"></div><div class="button-row"><button class="secondary" onclick="App.saveBuildDraft()">一時保存</button><button onclick="App.addGuideStep()">手順を追加</button></div></article>
-    <article id="guide-save-panel" class="panel hidden"><h3>STEP 11 Google Driveへ保存</h3><div id="save-preview"></div><label class="check-line"><input id="guide-save-confirm" type="checkbox"> 内容と保存先を確認しました</label><button id="save-guide-button" onclick="App.saveGuide()">Googleドキュメント + JSON を保存</button><div id="guide-save-result"></div></article>
+    <article class="panel"><h3>STEP 2 現在分かっていることを書き出す</h3><p class="muted">既に分かっている前提・URL・値などを書いておくと、台帳の初期化（STEP 4）で確認済みの事実として扱われます。会議解析で作られた確認質問は、台帳の「不明（unknown）」として自動で取り込まれます。</p><label>1行に1件<textarea id="known-prerequisites" rows="4"></textarea></label></article>
+    <article class="panel"><h3>STEP 3 過去資料を検索・選択する</h3><p class="muted">会議の文字起こしは自動で情報源に含まれます。追加の根拠資料があれば選択してください。</p><div class="inline-form"><label>Drive検索<input id="source-query" minlength="2"></label><button onclick="App.searchSources()">検索</button></div><div id="source-results" class="item-list"></div></article>
+    <article class="panel"><h3>STEP 4 骨格を抽出し、事実台帳を初期化する</h3><p class="muted">文字起こしから「作業の骨格（ステップ列）」と「判明している事実の台帳」を作ります。台帳はガイドに書く具体値をすべて出典つきで管理し、confirmed（確認済み）/ assumed（仮値）/ unknown（不明）の3状態で扱います。<strong>台帳にない具体値はガイドに書けません。</strong></p><button onclick="App.prepareSkeletonPrompt()">骨格・台帳初期化プロンプトを作成</button><label>骨格・台帳初期化プロンプト（P1）<textarea id="skeleton-prompt" rows="8" readonly></textarea></label><div class="button-row"><button id="copy-skeleton-prompt-button" onclick="App.copyText('skeleton-prompt')">プロンプトをコピー</button></div><label>生成AIの回答（骨格の説明と ```json ブロックをそのまま貼り付け）<textarea id="skeleton-import" rows="8" placeholder="生成AIの回答全文を貼り付け"></textarea></label><button onclick="App.importSkeleton()">骨格と台帳を取り込む</button><div id="skeleton-summary"></div></article>
+    <article class="panel"><h3>STEP 5 取材ループ — 質問に答えて事実を集める</h3><p class="muted">AIが「最も価値の高い質問」を最大5問作ります。回答は思い出して書くより、<strong>URL・画面の文言・コマンド出力をそのまま貼る</strong>のが速くて確実です。分からない質問は「わからない」や「作業前に確認でよい」で構いません。ゲートを通過するまで何度でも往復できます。</p><div id="interview-status"></div><div id="interview-questions"></div><label>追加情報・現物の貼り付け（URL、画面の文言、コマンド出力など。任意）<textarea id="interview-free-answer" rows="4" placeholder="例: 管理画面のURL https://…&#10;画面の文言: 「APIトークンを作成」"></textarea></label><button onclick="App.prepareInterviewPrompt()">回答をまとめて取材プロンプトを作成</button><label>取材プロンプト（P2）<textarea id="interview-prompt" rows="8" readonly></textarea></label><div class="button-row"><button id="copy-interview-prompt-button" onclick="App.copyText('interview-prompt')">プロンプトをコピー</button></div><label>生成AIの回答（6セクションの回答全文を貼り付け）<textarea id="interview-reply" rows="8" placeholder="## 1. 回答の理解確認 … ## 6. 次の質問 まで全文"></textarea></label><button onclick="App.importInterviewReply()">回答を取り込んで台帳を更新</button><div id="interview-result"></div></article>
+    <article class="panel"><h3>STEP 6 準備度ゲート — 穴を確認してからガイドを生成する</h3><p class="muted">ステップ×スロットの充足をアプリが機械採点します。すべての必須項目が「確認済み」または「作業前に確認へ降格」になるとゲートを通過できます。降格は敗北ではありません — 何が未確認かがガイドに明示されることが目標です。</p><div id="ledger-heatmap"></div><div id="ledger-open-entries"></div><div class="button-row"><button class="secondary" onclick="App.deferAllOpenEntries()">残りの未確認をすべて「作業前に確認」へ降格</button></div><div class="review-gate"><strong>ガイド生成前の確認</strong><ul><li>確認済み（●）の値は、本人の回答・貼り付け現物・文字起こしの明確な発言に基づいている</li><li>降格（▽）した項目は、ガイドの前提条件「作業前に確認」として明示される</li></ul><label class="check-line"><input id="gate-confirm" type="checkbox"> 台帳の内容を確認しました。この事実だけでガイドJSONを作成します</label><button onclick="App.prepareGuidePrompt()">ゲートを通過してガイド生成プロンプトを作成</button></div><div id="guide-json-prompt-stage" class="json-stage hidden"><label>ガイドJSON生成プロンプト（P3）<textarea id="guide-prompt" rows="10" readonly></textarea></label><div class="button-row"><button id="copy-guide-prompt-button" onclick="App.copyText('guide-prompt')">JSON生成プロンプトをコピー</button></div><p class="meta">コピー後、お使いの生成AIへ貼り付け、返ってきたJSONを STEP 7 へ貼り付けてください。</p></div></article>
+    <article class="panel"><h3>STEP 7 生成AIの回答JSONを取り込む（台帳突合つき）</h3><p class="muted">スキーマ検証に加えて、本文中のURL・画面表記などの主要な具体値・根拠台帳ID・降格項目の前提条件反映を突合します。台帳にない値（＝出典不明の値）が混ざっていた場合は取り込みを拒否します。</p><label>生成AIの回答<textarea id="guide-json-import" rows="10" placeholder="生成AIが返したJSONを貼り付け"></textarea></label><button onclick="App.importGuide()">検証・台帳突合して取り込む</button><div id="guide-import-validation" class="validation-box hidden"></div></article>
+    <article id="guide-review-panel" class="panel hidden"><h3>STEP 8 机上実行レビュー — 初見の作業者として通し読みさせる</h3><p class="muted">生成とは別の会話（新しいチャット）で、ガイドだけを渡して頭の中で実行させます。詰まりが見つかったら台帳の不明として還流し、STEP 5 の取材で解消するか「作業前に確認」へ降格します。</p><div id="guide-draft-preview" class="draft-preview"></div><div id="guide-depth-findings"></div><div class="desk-review"><strong>机上実行レビュー（P4）</strong><p class="muted">必ず<strong>新しいチャット</strong>に貼ってください。書いた経緯を知らない初見の条件にすることで、甘い検収を防ぎます。</p><button class="secondary" onclick="App.prepareDeskReviewPrompt()">机上実行レビュープロンプトを作成</button><label>机上実行レビュープロンプト<textarea id="desk-review-prompt" rows="6" readonly></textarea></label><div class="button-row"><button id="copy-desk-review-prompt-button" onclick="App.copyText('desk-review-prompt')">プロンプトをコピー</button></div><label>生成AIの回答（トレースと ```json ブロック）<textarea id="desk-review-reply" rows="6" placeholder="Step 1 を実行中 → … 最後のjsonブロックまで全文"></textarea></label><button onclick="App.importDeskReviewReply()">レビュー結果を取り込む</button><div id="desk-review-result"></div></div><div class="plan-refine"><strong>そのほかの再調整</strong><p class="muted">アプリの具体度チェックや自分で気づいた点は、修正プロンプトで生成AIに直させ、修正版JSONを STEP 7 へ貼り直してください。</p><div class="button-row"><button class="secondary" onclick="App.prepareDepthCheckPrompt()">具体度チェックプロンプトを作成</button></div><label>レビュー指摘（修正してほしい点を具体的に）<textarea id="review-feedback" rows="3" placeholder="例: S2 の完了条件を、確認できる数値まで具体化して"></textarea></label><button onclick="App.prepareRevisionPrompt()">修正プロンプトを作成</button><label>修正プロンプト<textarea id="revision-prompt" rows="6" readonly></textarea></label><button id="copy-revision-prompt-button" onclick="App.copyText('revision-prompt')">修正プロンプトをコピー</button></div></article>
+    <article id="guide-editor-panel" class="panel hidden"><h3>STEP 9 編集・確認</h3><p class="muted">内容を変更した場合は「編集内容を保存」を押してください。最終稿に変わるため、STEP 8 の机上実行レビューをもう一度行ってから保存します。</p><div id="guide-editor"></div><div class="button-row"><button class="secondary" onclick="App.saveBuildDraft()">編集内容を保存</button><button onclick="App.addGuideStep()">手順を追加</button></div></article>
+    <article id="guide-save-panel" class="panel hidden"><h3>STEP 10 Google Driveへ保存</h3><div id="save-preview"></div><label class="check-line"><input id="guide-save-confirm" type="checkbox"> 内容と保存先を確認しました</label><button id="save-guide-button" onclick="App.saveGuide()">Googleドキュメント + JSON を保存</button><div id="guide-save-result"></div></article>
   </div>
 </section>
 <!-- ===== END WorkGuideBuildView.html ===== -->
@@ -283,13 +299,13 @@
       <article class="creation-option featured">
         <p class="eyebrow">MANUAL</p>
         <h3>生成AIとやりとりして作る</h3>
-        <p>アプリが用意したプロンプトを好きな生成AIへ貼り付け、回答JSONをこの画面へ戻して確認・編集・保存します。APIキーは不要です。</p>
+        <p>文字起こしから知識台帳を作り、最大5問ずつの取材で事実を集めてから、回答JSONを確認・保存します。APIキーは不要です。</p>
         <button onclick="App.showView('actions')">作業候補を選ぶ</button>
       </article>
       <article class="creation-option">
         <p class="eyebrow">AUTOMATIC</p>
         <h3>APIで自動生成する</h3>
-        <p>生成AI APIを設定すると、初稿作成・AI検収・承認待ち保存まで自動化できます。手動作成と併用できます。</p>
+        <p>生成AI APIを設定すると、台帳初期化・未確認項目の明示・机上実行レビュー・承認待ち保存まで自動化できます。手動作成と併用できます。</p>
         <button class="secondary" onclick="App.showView('admin')">自動化を設定する</button>
       </article>
     </div>
@@ -474,15 +490,6 @@ const App = (function () {
       document.getElementById('analysis-review-confirm').checked = false;
       document.getElementById('analysis-json-stage').classList.add('hidden');
       document.getElementById('analysis-json-prompt').value = '';
-    });
-    document.getElementById('guide-plan').addEventListener('input', function () {
-      document.getElementById('guide-plan-confirm').checked = false;
-      document.getElementById('guide-json-prompt-stage').classList.add('hidden');
-      document.getElementById('guide-prompt').value = '';
-      if (state.buildSession && state.buildSession.data) {
-        state.buildSession.data.approvedGuidePlan = '';
-        state.buildSession.data.lastAiPrompt = '';
-      }
     });
   }
 
@@ -842,7 +849,7 @@ const App = (function () {
     try {
       const result = await call('startWorkGuideRevision', workGuideId);
       state.buildSession = result.session;
-      state.editGuide = result.session.data.importedWorkGuide;
+      state.editGuide = result.session.data.importedWorkGuide || null;
       state.saveRequestToken = '';
       resetBuilderForm();
       renderBuilder();
@@ -851,22 +858,13 @@ const App = (function () {
   }
 
   function resetBuilderForm() {
-    document.getElementById('guide-plan-prompt').value = '';
-    document.getElementById('guide-plan').value = '';
-    document.getElementById('plan-refine-feedback').value = '';
-    document.getElementById('guide-depth-findings').innerHTML = '';
-    document.getElementById('guide-plan-confirm').checked = false;
-    document.getElementById('guide-prompt').value = '';
+    ['skeleton-prompt', 'skeleton-import', 'interview-free-answer', 'interview-prompt', 'interview-reply', 'guide-prompt', 'guide-json-import', 'desk-review-prompt', 'desk-review-reply', 'review-feedback', 'revision-prompt', 'source-query'].forEach(function (id) { document.getElementById(id).value = ''; });
+    ['skeleton-summary', 'interview-status', 'interview-questions', 'interview-result', 'ledger-heatmap', 'ledger-open-entries', 'desk-review-result', 'source-results', 'guide-depth-findings', 'guide-save-result'].forEach(function (id) { document.getElementById(id).innerHTML = ''; });
     document.getElementById('guide-json-prompt-stage').classList.add('hidden');
-    document.getElementById('guide-json-import').value = '';
-    document.getElementById('review-feedback').value = '';
-    document.getElementById('revision-prompt').value = '';
-    document.getElementById('source-query').value = '';
-    document.getElementById('source-results').innerHTML = '';
     document.getElementById('guide-import-validation').className = 'validation-box hidden';
     document.getElementById('guide-import-validation').innerHTML = '';
     document.getElementById('guide-save-result').className = '';
-    document.getElementById('guide-save-result').innerHTML = '';
+    document.getElementById('gate-confirm').checked = false;
     document.getElementById('guide-save-confirm').checked = false;
     document.getElementById('save-guide-button').disabled = false;
     document.getElementById('guide-review-panel').classList.add('hidden');
@@ -881,26 +879,249 @@ const App = (function () {
     document.getElementById('builder-workspace').classList.remove('hidden');
     document.getElementById('build-session-label').textContent = session.buildSessionId;
     document.getElementById('cancel-guide-build-button').classList.toggle('hidden', Boolean(session.data.revisionWorkGuideId) || session.status === 'completed');
-    document.getElementById('builder-stepper').innerHTML = Array.from({ length: 11 }, function (_, index) {
-      const step = index + 1;
-      return '<li class="' + (step < session.currentStep ? 'done' : step === session.currentStep ? 'current' : '') + '">STEP ' + step + '</li>';
-    }).join('');
-    document.getElementById('builder-action').innerHTML = '<h4>' + escapeHtml(session.data.action.title) + '</h4><p>' + escapeHtml(session.data.action.description) + '</p>';
+    renderBuilderStepper();
+    document.getElementById('builder-action').innerHTML = '<h4>' + escapeHtml(session.data.action.title) + '</h4><p>' + escapeHtml(session.data.action.description) + '</p>' +
+      ((session.data.interviewSeeds || []).length ? '<div class="notice warning"><strong>前回実行からの取材対象（ガイド外参照の記録） ' + session.data.interviewSeeds.length + '件</strong><ul>' + session.data.interviewSeeds.map(function (seed) {
+        const text = typeof seed === 'string' ? seed : '手順 ' + (seed.stepId || '?') + ': ' + (seed.note || '');
+        return '<li>' + escapeHtml(text) + '</li>';
+      }).join('') + '</ul></div>' : '');
     document.getElementById('known-prerequisites').value = (session.data.knownPrerequisites || []).join('\n');
-    document.getElementById('prerequisite-questions').innerHTML = (session.data.prerequisiteQuestions || []).map(function (question, index) {
-      return '<label>' + escapeHtml(question) + '<textarea rows="2" data-prereq-index="' + index + '">' + escapeHtml((session.data.prerequisiteAnswers || {})[question] || '') + '</textarea></label>';
-    }).join('');
-    if (session.data.lastAiPlanPrompt) document.getElementById('guide-plan-prompt').value = session.data.lastAiPlanPrompt;
-    if (session.data.approvedGuidePlan) {
-      document.getElementById('guide-plan').value = session.data.approvedGuidePlan;
-      document.getElementById('guide-plan-confirm').checked = true;
-    }
+    if (session.data.lastSkeletonPrompt) document.getElementById('skeleton-prompt').value = session.data.lastSkeletonPrompt;
+    if (session.data.lastInterviewPrompt) document.getElementById('interview-prompt').value = session.data.lastInterviewPrompt;
+    if (session.data.lastDeskReviewPrompt) document.getElementById('desk-review-prompt').value = session.data.lastDeskReviewPrompt;
+    renderSkeletonSummary();
+    renderInterviewPanel();
+    renderLedgerPanels();
+    renderDeskReviewResult(session.data.deskReview || null);
     if (session.data.lastAiPrompt) {
       const promptField = ['work_guide_revision', 'work_guide_depth_check'].indexOf(session.data.lastAiPromptPhase) >= 0 ? 'revision-prompt' : 'guide-prompt';
       document.getElementById(promptField).value = session.data.lastAiPrompt;
       if (session.data.lastAiPromptPhase === 'work_guide_generation') document.getElementById('guide-json-prompt-stage').classList.remove('hidden');
     }
-    if (state.editGuide) { renderDraftPreview(); renderGuideEditor(); }
+    if (state.editGuide) {
+      renderDraftPreview();
+      if (session.data.deskReview && session.data.deskReview.passed) renderGuideEditor();
+      else {
+        document.getElementById('guide-editor-panel').classList.add('hidden');
+        document.getElementById('guide-save-panel').classList.add('hidden');
+      }
+    }
+  }
+
+  function renderBuilderStepper() {
+    const session = state.buildSession;
+    document.getElementById('builder-stepper').innerHTML = Array.from({ length: 10 }, function (_, index) {
+      const step = index + 1;
+      const className = session.status === 'completed' || step < session.currentStep ? 'done' : step === session.currentStep ? 'current' : '';
+      return '<li class="' + className + '">STEP ' + step + '</li>';
+    }).join('');
+  }
+
+  function renderSkeletonSummary() {
+    const session = state.buildSession;
+    const data = session && session.data ? session.data : {};
+    const target = document.getElementById('skeleton-summary');
+    if (!data.skeleton) { target.innerHTML = ''; return; }
+    const readiness = session.readiness;
+    target.innerHTML = '<div class="validation-box success"><strong>骨格と台帳を取り込み済み</strong><p>' + escapeHtml(data.skeleton.purpose || '') + '</p><p class="meta">完了状態: ' + escapeHtml(data.skeleton.completion || '') + '</p><ol>' + (data.skeleton.steps || []).map(function (step) { return '<li>' + escapeHtml(step.skeletonId + ' ' + step.title) + '</li>'; }).join('') + '</ol><p class="meta">台帳 ' + (data.ledger || []).length + '件 / 準備度 ' + (readiness ? readiness.overallScore + '%' : '-') + '</p></div>';
+  }
+
+  function renderInterviewPanel() {
+    const session = state.buildSession;
+    const data = session && session.data ? session.data : {};
+    const status = document.getElementById('interview-status');
+    if (!data.skeleton) {
+      status.innerHTML = '<p class="muted">先に STEP 4 で骨格と台帳を初期化してください。</p>';
+      document.getElementById('interview-questions').innerHTML = '';
+      return;
+    }
+    const rounds = data.interviewRounds || [];
+    const readiness = session.readiness;
+    const last = rounds[rounds.length - 1];
+    const prev = rounds[rounds.length - 2];
+    const delta = last && prev ? Number(last.score) - Number(prev.score) : null;
+    status.innerHTML = '<p class="meta">取材ラウンド ' + rounds.length + '回 / 準備度 ' + (readiness ? readiness.overallScore : 0) + '%' + (delta !== null ? '（前回比 ' + (delta >= 0 ? '+' : '') + delta + 'pt）' : '') + ' / 確認済み ' + (readiness ? readiness.confirmedCount : 0) + '件 / 作業前に確認へ降格 ' + (readiness ? readiness.deferredCount : 0) + '件</p>';
+    renderInterviewQuestions(data.pendingQuestions || []);
+  }
+
+  function renderInterviewQuestions(questions) {
+    const target = document.getElementById('interview-questions');
+    if (!questions.length) {
+      target.innerHTML = '<p class="muted">未回答の質問はありません。追加情報だけ書いて「取材プロンプトを作成」で次のラウンドを始めるか、STEP 6 のゲートへ進んでください。</p>';
+      return;
+    }
+    target.innerHTML = questions.map(function (question, index) {
+      const options = ['はい', 'いいえ', 'わからない', '作業前に確認でよい'];
+      return '<div class="ledger-question"><div class="lq-text">' + escapeHtml(question.text).replace(/\n/g, '<br>') + '</div>' +
+        '<div class="lq-options">' + options.map(function (option) {
+          return '<label class="check-line"><input type="radio" name="lq-' + index + '" value="' + attr(option) + '">' + escapeHtml(option) + '</label>';
+        }).join('') + '</div><label>補足・現物の貼り付け（URLや画面の文言はそのまま貼るのが確実）<textarea rows="2" data-question-answer="' + index + '"></textarea></label></div>';
+    }).join('');
+  }
+
+  function collectInterviewAnswers() {
+    const data = state.buildSession.data;
+    const questions = data.pendingQuestions || [];
+    const parts = [];
+    const deferrals = [];
+    questions.forEach(function (question, index) {
+      const chosen = document.querySelector('[name="lq-' + index + '"]:checked');
+      const noteField = document.querySelector('[data-question-answer="' + index + '"]');
+      const note = noteField ? noteField.value.trim() : '';
+      const answer = chosen ? chosen.value : '';
+      if (!answer && !note) return;
+      parts.push('【' + question.questionId + '】\n質問: ' + question.text + '\n回答: ' + (answer || '（選択なし）') + (note ? '\n補足・貼り付け:\n' + note : ''));
+      if (answer === '作業前に確認でよい' && question.stepRef && question.slot) {
+        deferrals.push({ stepRef: question.stepRef, slot: question.slot, label: question.text.split('\n')[0].slice(0, 60) });
+      }
+    });
+    const free = document.getElementById('interview-free-answer').value.trim();
+    if (free) parts.push('【追加情報・現物の貼り付け】\n' + free);
+    return { text: parts.join('\n\n'), deferrals: deferrals };
+  }
+
+  async function prepareInterviewPrompt() {
+    try {
+      const answers = collectInterviewAnswers();
+      const result = await call('prepareLedgerInterviewPrompt', state.buildSession.buildSessionId, answers.text, answers.deferrals);
+      document.getElementById('interview-prompt').value = result.prompt;
+      document.getElementById('interview-reply').value = '';
+      state.buildSession.data.lastInterviewPrompt = result.prompt;
+      state.buildSession.readiness = result.readiness;
+      renderLedgerPanels();
+      toast('取材プロンプト（ラウンド' + result.round + '）を作成しました。コピーして生成AIへ渡し、回答全文を貼り付けてください。');
+    } catch (error) { showError(error); }
+  }
+
+  async function importInterviewReply() {
+    try {
+      const result = await call('importLedgerInterviewReply', state.buildSession.buildSessionId, document.getElementById('interview-reply').value);
+      const data = state.buildSession.data;
+      data.ledger = result.ledger;
+      data.pendingQuestions = result.questions || [];
+      data.lastInterviewPrompt = '';
+      data.interviewRounds = (data.interviewRounds || []).concat([{ round: result.round, score: result.readiness.overallScore }]);
+      state.buildSession.readiness = result.readiness;
+      state.buildSession.currentStep = result.readiness.gatePassed ? 6 : 5;
+      document.getElementById('interview-reply').value = '';
+      document.getElementById('interview-free-answer').value = '';
+      renderInterviewResult(result);
+      renderInterviewPanel();
+      renderLedgerPanels();
+      renderBuilderStepper();
+      toast('台帳を更新しました（追加' + result.applied.added + '件 / 更新' + result.applied.updated + '件 / 準備度' + result.readiness.overallScore + '%）。');
+    } catch (error) { showError(error); }
+  }
+
+  function renderInterviewResult(result) {
+    const sections = result.sections || {};
+    const block = function (title, text) {
+      return text ? '<details open class="interaction-item"><summary><strong>' + escapeHtml(title) + '</strong></summary><p>' + escapeHtml(text).replace(/\n/g, '<br>') + '</p></details>' : '';
+    };
+    let html = '';
+    if ((result.applied.skipped || []).length) html += '<div class="notice warning"><strong>形式不備で無視したエントリ</strong><ul>' + result.applied.skipped.map(function (item) { return '<li>' + escapeHtml(item) + '</li>'; }).join('') + '</ul></div>';
+    html += block('回答の理解確認（誤解があればここで気づけます）', sections.echo);
+    html += block('矛盾・気づき', sections.contradictions);
+    html += block('仮値の監査', sections.assumedAudit);
+    if (result.stagnant) html += '<div class="notice warning"><strong>準備度が2ラウンド続けて増えていません。</strong> 答えられない質問を持ち続けるより、残りを「作業前に確認」へ降格して先へ進むことを検討してください（STEP 6 の一括降格）。重要なのは全知ではなく、何が未確認かの明示です。</div>';
+    if ((result.demotionCandidates || []).length) {
+      html += '<div class="notice warning"><strong>2回以上残っている質問があります。</strong><ul>' +
+        result.demotionCandidates.map(function (question) { return '<li>' + escapeHtml((question.stepRef || '全般') + ' / ' + (question.slot || '-') + ': ' + question.text.split(/\r?\n/)[0]) + '</li>'; }).join('') +
+        '</ul><p>答えを得られない場合は、STEP 6 で該当項目を「作業前に確認」へ降格してください。</p></div>';
+    }
+    document.getElementById('interview-result').innerHTML = html;
+  }
+
+  const LEDGER_SLOT_COLUMNS = [['url', 'URL'], ['ui_label', '画面表記'], ['input_value', '入力値'], ['verification', '完了確認'], ['precondition', '前提'], ['failure_recovery', '失敗時'], ['caution', '注意'], ['decision_rule', '判断'], ['scope', '範囲']];
+  const LEDGER_STATE_MARKS = { confirmed: '●', assumed: '◐', unknown: '○', deferred: '▽', missing: '·' };
+
+  function renderLedgerPanels() {
+    const session = state.buildSession;
+    const readiness = session ? session.readiness : null;
+    const heatmap = document.getElementById('ledger-heatmap');
+    if (!readiness) {
+      heatmap.innerHTML = '<p class="muted">STEP 4 で台帳を初期化すると、ここにステップ×スロットの準備度ヒートマップが表示されます。</p>';
+      document.getElementById('ledger-open-entries').innerHTML = '';
+      return;
+    }
+    heatmap.innerHTML = '<div class="validation-box ' + (readiness.gatePassed ? 'success' : 'error') + '"><strong>' + (readiness.gatePassed ? 'ゲート通過可能です。' : 'まだ穴があります（未解消 ' + readiness.holes.length + '箇所）。') + '</strong> 全体準備度 ' + readiness.overallScore + '%</div>' +
+      '<div class="heatmap-wrap"><table class="heatmap"><thead><tr><th>ステップ</th>' + LEDGER_SLOT_COLUMNS.map(function (column) { return '<th>' + escapeHtml(column[1]) + '</th>'; }).join('') + '<th>準備度</th></tr></thead><tbody>' +
+      readiness.steps.map(function (step) {
+        return '<tr><th>' + escapeHtml(step.skeletonId + ' ' + step.title) + '</th>' + LEDGER_SLOT_COLUMNS.map(function (column) {
+          const cellState = step.slots[column[0]] || 'missing';
+          return '<td class="hm-' + attr(cellState) + '" title="' + attr(column[1] + ': ' + cellState) + '">' + LEDGER_STATE_MARKS[cellState] + '</td>';
+        }).join('') + '<td>' + step.score + '%</td></tr>';
+      }).join('') + '</tbody></table></div><p class="meta">● confirmed（確認済み）　◐ assumed（仮値・要確認）　○ unknown（不明）　▽ 作業前に確認へ降格　· エントリなし</p>';
+    renderOpenEntries();
+  }
+
+  function renderOpenEntries() {
+    const ledger = state.buildSession.data.ledger || [];
+    const open = ledger.filter(function (entry) { return entry.confidence !== 'confirmed' && entry.deferred !== true; });
+    const deferred = ledger.filter(function (entry) { return entry.deferred === true; });
+    let html = open.length ? '<div class="page-heading compact"><h4>未確認の項目（' + open.length + '件）</h4></div>' + open.map(function (entry) {
+      const metaText = entry.entryId + ' / ' + (entry.stepRef || '全般') + ' / ' + entry.slot + ' / ' + (entry.confidence === 'assumed' ? '仮値: ' + (entry.value || '-') : '不明') + (entry.note ? ' / ' + entry.note : '');
+      return '<div class="list-row"><div><strong>' + escapeHtml(entry.claim) + '</strong><div class="meta">' + escapeHtml(metaText) + '</div></div><div class="button-row"><button class="secondary" onclick="App.confirmLedgerEntry(\'' + attr(entry.entryId) + '\')">' + (entry.confidence === 'assumed' && entry.value ? '仮値で合っている' : '正しい値を入力して確認') + '</button><button class="secondary" onclick="App.deferLedgerEntry(\'' + attr(entry.entryId) + '\')">作業前に確認へ</button></div></div>';
+    }).join('') : '<p class="muted">未確認の項目はありません。</p>';
+    if (deferred.length) html += '<details><summary>作業前に確認へ降格した項目（' + deferred.length + '件） — ガイドの前提条件に明示されます</summary>' + deferred.map(function (entry) {
+      const metaText = entry.entryId + ' / ' + (entry.stepRef || '全般') + ' / ' + entry.slot + (entry.value ? ' / 見立て: ' + entry.value : '');
+      return '<div class="list-row"><div><strong>' + escapeHtml(entry.claim) + '</strong><div class="meta">' + escapeHtml(metaText) + '</div></div><button class="secondary" onclick="App.reopenLedgerEntry(\'' + attr(entry.entryId) + '\')">降格を取り消す</button></div>';
+    }).join('') + '</details>';
+    document.getElementById('ledger-open-entries').innerHTML = html;
+  }
+
+  async function confirmLedgerEntry(entryId) {
+    try {
+      const entry = (state.buildSession.data.ledger || []).find(function (item) { return String(item.entryId) === String(entryId); });
+      let value = entry && entry.value ? entry.value : '';
+      if (entry && entry.confidence === 'assumed' && value) {
+        if (!window.confirm('仮値「' + value + '」を確認済み（confirmed）にしますか？\n実際の画面・現物と一致していることを確認してください。')) return;
+      } else {
+        value = window.prompt('確認済みにする正しい値を入力してください（URL・画面の文言など、現物をそのまま貼るのが確実です）', value || '');
+        if (value === null || !value.trim()) return;
+      }
+      const result = await call('updateLedgerEntry', state.buildSession.buildSessionId, entryId, 'confirm', value);
+      state.buildSession.data.ledger = result.ledger;
+      state.buildSession.readiness = result.readiness;
+      renderLedgerPanels();
+      renderInterviewPanel();
+      renderSkeletonSummary();
+      toast('確認済みにしました。');
+    } catch (error) { showError(error); }
+  }
+
+  async function deferLedgerEntry(entryId) {
+    try {
+      const result = await call('updateLedgerEntry', state.buildSession.buildSessionId, entryId, 'defer', '');
+      state.buildSession.data.ledger = result.ledger;
+      state.buildSession.readiness = result.readiness;
+      renderLedgerPanels();
+      renderInterviewPanel();
+      toast('作業前に確認へ降格しました。ガイドの前提条件に明示されます。');
+    } catch (error) { showError(error); }
+  }
+
+  async function reopenLedgerEntry(entryId) {
+    try {
+      const result = await call('updateLedgerEntry', state.buildSession.buildSessionId, entryId, 'reopen', '');
+      state.buildSession.data.ledger = result.ledger;
+      state.buildSession.readiness = result.readiness;
+      renderLedgerPanels();
+      renderInterviewPanel();
+      toast('降格を取り消しました。取材ループで確認できます。');
+    } catch (error) { showError(error); }
+  }
+
+  async function deferAllOpenEntries() {
+    if (!window.confirm('未確認（unknown / assumed）の項目をすべて「作業前に確認」へ降格しますか？\n降格した項目はガイドの前提条件に「作業前に確認: …」として明示されます。')) return;
+    try {
+      const result = await call('deferAllOpenLedgerEntries', state.buildSession.buildSessionId);
+      state.buildSession.data.ledger = result.ledger;
+      state.buildSession.readiness = result.readiness;
+      renderLedgerPanels();
+      renderInterviewPanel();
+      toast(result.deferredCount + '件を作業前に確認へ降格しました。');
+    } catch (error) { showError(error); }
   }
 
   async function cancelBuild() {
@@ -919,24 +1140,42 @@ const App = (function () {
     } catch (error) { showError(error); }
   }
 
-  async function prepareGuidePlanPrompt() {
+  async function prepareSkeletonPrompt() {
     try {
-      const selectedIds = Array.from(document.querySelectorAll('[name="source-file"]:checked')).map(function (input) { return input.value; });
-      const prereqs = collectPrerequisiteData();
-      const result = await call('prepareWorkGuidePlanPrompt', state.buildSession.buildSessionId, selectedIds, prereqs.known, prereqs.answers);
-      document.getElementById('guide-plan-prompt').value = result.prompt;
-      document.getElementById('guide-plan').value = '';
-      document.getElementById('guide-plan-confirm').checked = false;
-      document.getElementById('guide-prompt').value = '';
-      document.getElementById('guide-json-prompt-stage').classList.add('hidden');
-      state.buildSession.data.knownPrerequisites = prereqs.known;
-      state.buildSession.data.prerequisiteAnswers = prereqs.answers;
+      const selectedIds = (state.buildSession.data.selectedSources || []).map(function (source) { return source.fileId; })
+        .concat(Array.from(document.querySelectorAll('[name="source-file"]:checked')).map(function (input) { return input.value; }))
+        .filter(function (fileId, index, list) { return fileId && list.indexOf(fileId) === index; });
+      const known = document.getElementById('known-prerequisites').value.split(/\r?\n/).map(function (value) { return value.trim(); }).filter(Boolean);
+      const result = await call('prepareGuideSkeletonPrompt', state.buildSession.buildSessionId, selectedIds, known);
+      document.getElementById('skeleton-prompt').value = result.prompt;
+      state.buildSession.data.knownPrerequisites = known;
       state.buildSession.data.selectedSources = result.selectedSources;
-      state.buildSession.data.lastAiPlanPrompt = result.prompt;
-      state.buildSession.data.approvedGuidePlan = '';
-      state.buildSession.data.lastAiPrompt = '';
-      state.buildSession.currentStep = 7;
-      toast('人が読むための作業ガイド設計案プロンプトを作成しました。');
+      state.buildSession.data.lastSkeletonPrompt = result.prompt;
+      state.buildSession.currentStep = 4;
+      renderBuilderStepper();
+      toast('骨格・台帳初期化プロンプトを作成しました。会議の文字起こしは自動で情報源に含まれています。');
+    } catch (error) { showError(error); }
+  }
+
+  async function importSkeleton() {
+    try {
+      const result = await call('importGuideSkeleton', state.buildSession.buildSessionId, document.getElementById('skeleton-import').value);
+      const data = state.buildSession.data;
+      data.skeleton = result.skeleton;
+      data.ledger = result.ledger;
+      data.pendingQuestions = [];
+      data.interviewRounds = [];
+      data.lastSkeletonPrompt = '';
+      state.buildSession.readiness = result.readiness;
+      state.buildSession.currentStep = 5;
+      document.getElementById('skeleton-import').value = '';
+      renderSkeletonSummary();
+      renderInterviewPanel();
+      renderLedgerPanels();
+      renderBuilderStepper();
+      toast((result.skipped || []).length
+        ? '骨格と台帳を初期化しました（' + result.skipped.length + '件は形式不備で無視）。STEP 5 の取材ループへ進んでください。'
+        : '骨格と台帳を初期化しました。STEP 5 の取材ループへ進んでください。');
     } catch (error) { showError(error); }
   }
 
@@ -951,60 +1190,90 @@ const App = (function () {
     } catch (error) { showError(error); }
   }
 
-  function collectPrerequisiteData() {
-    const known = document.getElementById('known-prerequisites').value.split(/\r?\n/).map(function (value) { return value.trim(); }).filter(Boolean);
-    const answers = {};
-    (state.buildSession.data.prerequisiteQuestions || []).forEach(function (question, index) {
-      const field = document.querySelector('[data-prereq-index="' + index + '"]');
-      answers[question] = field ? field.value.trim() : '';
-    });
-    return { known: known, answers: answers };
-  }
-
   async function prepareGuidePrompt() {
     try {
-      const selectedIds = Array.from(document.querySelectorAll('[name="source-file"]:checked')).map(function (input) { return input.value; });
-      const prereqs = collectPrerequisiteData();
-      const approvedPlan = document.getElementById('guide-plan').value.trim();
-      const confirmed = document.getElementById('guide-plan-confirm').checked;
-      const result = await call('prepareWorkGuidePrompt', state.buildSession.buildSessionId, selectedIds, prereqs.known, prereqs.answers, approvedPlan, confirmed);
+      const confirmed = document.getElementById('gate-confirm').checked;
+      const result = await call('prepareWorkGuidePrompt', state.buildSession.buildSessionId, confirmed);
       document.getElementById('guide-prompt').value = result.prompt;
       document.getElementById('guide-json-prompt-stage').classList.remove('hidden');
-      state.buildSession.data.knownPrerequisites = prereqs.known;
-      state.buildSession.data.prerequisiteAnswers = prereqs.answers;
-      state.buildSession.data.selectedSources = result.selectedSources;
-      state.buildSession.data.approvedGuidePlan = approvedPlan;
       state.buildSession.data.lastAiPrompt = result.prompt;
       state.buildSession.data.lastAiPromptPhase = 'work_guide_generation';
-      state.buildSession.currentStep = 7;
-      renderBuilder();
-      toast('確認済みの設計案を含むJSON生成プロンプトを作成しました。');
-    } catch (error) { showError(error); }
+      state.buildSession.data.gatePassed = true;
+      state.buildSession.readiness = result.readiness;
+      state.buildSession.currentStep = 6;
+      renderBuilderStepper();
+      toast('準備度ゲートを通過しました。台帳を唯一の事実源とするJSON生成プロンプトを作成しました。');
+    } catch (error) {
+      if (error.details && error.details.holes && error.details.holes.length) {
+        showError(new Error(error.message + ' 穴: ' + error.details.holes.map(function (hole) { return hole.skeletonId + '/' + hole.slot; }).join('、')));
+      } else showError(error);
+    }
   }
 
   async function importGuide() {
     const box = document.getElementById('guide-import-validation');
     try {
-      if (!state.buildSession.data.revisionWorkGuideId) {
-        const currentPlan = document.getElementById('guide-plan').value.trim();
-        if (!state.buildSession.data.approvedGuidePlan || currentPlan !== state.buildSession.data.approvedGuidePlan || !document.getElementById('guide-plan-confirm').checked) {
-          throw new Error('作業ガイド設計案を変更した場合は、もう一度JSON生成プロンプトを作成してください。');
-        }
-      }
       const result = await call('importWorkGuideToBuild', state.buildSession.buildSessionId, document.getElementById('guide-json-import').value);
       state.editGuide = result.workGuide;
       state.saveRequestToken = '';
       state.buildSession.data.importedWorkGuide = result.workGuide;
       state.buildSession.data.depthFindings = result.depthFindings || [];
-      state.buildSession.currentStep = 9;
+      state.buildSession.data.deskReview = null;
+      state.buildSession.currentStep = 8;
       box.className = 'validation-box success';
       box.textContent = (result.depthFindings || []).length
-        ? '検証OK。ただし具体度チェックで ' + result.depthFindings.length + ' 件の不足があります。STEP 9 の具体度チェックプロンプトで生成AIに修正させてください。'
-        : '検証OK。具体度チェックも通過しました。STEP 9 でドラフトを確認し、必要ならレビュー指摘から修正プロンプトを作成してください。';
+        ? '検証・台帳突合OK。ただし具体度チェックで ' + result.depthFindings.length + ' 件の不足があります。STEP 8 で生成AIに点検・修正させてください。'
+        : '検証・台帳突合OK。STEP 8 の机上実行レビューで、初見の作業者として通し読みさせてください。';
       document.getElementById('revision-prompt').value = '';
+      document.getElementById('desk-review-prompt').value = '';
+      document.getElementById('desk-review-reply').value = '';
       renderBuilder();
       document.getElementById('guide-review-panel').scrollIntoView({ behavior: 'smooth' });
     } catch (error) { renderValidationError(box, error); }
+  }
+
+  async function prepareDeskReviewPrompt() {
+    try {
+      const result = await call('prepareDeskReviewPrompt', state.buildSession.buildSessionId);
+      document.getElementById('desk-review-prompt').value = result.prompt;
+      state.buildSession.data.lastDeskReviewPrompt = result.prompt;
+      toast('机上実行レビュープロンプトを作成しました。必ず新しいチャット（初見の条件）に貼ってください。');
+    } catch (error) { showError(error); }
+  }
+
+  async function importDeskReviewReply() {
+    try {
+      const result = await call('importDeskReviewReply', state.buildSession.buildSessionId, document.getElementById('desk-review-reply').value);
+      const data = state.buildSession.data;
+      data.lastDeskReviewPrompt = '';
+      data.deskReview = { passed: result.passed, findings: result.findings, trace: result.trace };
+      if (result.ledger) data.ledger = result.ledger;
+      if (result.readiness) state.buildSession.readiness = result.readiness;
+      if (!result.passed) data.gatePassed = false;
+      state.buildSession.currentStep = result.currentStep || (result.passed ? 9 : 5);
+      document.getElementById('desk-review-reply').value = '';
+      renderDeskReviewResult(data.deskReview);
+      renderLedgerPanels();
+      renderInterviewPanel();
+      renderBuilderStepper();
+      if (result.passed && state.editGuide) renderGuideEditor();
+      else {
+        document.getElementById('guide-editor-panel').classList.add('hidden');
+        document.getElementById('guide-save-panel').classList.add('hidden');
+      }
+      toast(result.passed ? '机上実行レビュー: 完走です。STEP 9 の編集へ進んでください。' : '詰まり' + result.findings.length + '件を台帳の不明として還流しました。');
+    } catch (error) { showError(error); }
+  }
+
+  function renderDeskReviewResult(review) {
+    const target = document.getElementById('desk-review-result');
+    if (!review) { target.innerHTML = ''; return; }
+    if (review.passed) {
+      target.innerHTML = '<div class="validation-box success"><strong>完走</strong> 初見の作業者として詰まりなく実行できる状態です。STEP 9 の編集・STEP 10 の保存へ進んでください。</div>';
+      return;
+    }
+    target.innerHTML = '<div class="notice warning"><strong>詰まり ' + (review.findings || []).length + '件</strong><ul>' + (review.findings || []).map(function (finding) { return '<li>[' + escapeHtml(finding.type) + '] ' + escapeHtml((finding.stepRef ? finding.stepRef + ': ' : '') + finding.claim) + '</li>'; }).join('') + '</ul><p>台帳の不明として還流済みです。STEP 5 の取材で解消して再生成するか、STEP 6 で「作業前に確認」へ降格したうえで、下の修正プロンプトで前提条件へ反映してください。</p></div>' +
+      ((review.trace || []).length ? '<details><summary>実行トレース</summary><p>' + review.trace.map(function (line) { return escapeHtml(line); }).join('<br>') + '</p></details>' : '');
   }
 
   function renderDraftPreview() {
@@ -1015,11 +1284,17 @@ const App = (function () {
     };
     const stepsHtml = (guide.steps || []).slice().sort(function (a, b) { return a.order - b.order; }).map(function (step) {
       const inputs = (step.inputs || []).map(function (input) { return '<li>' + escapeHtml(input.label + (input.required ? '（必須）' : '')) + '</li>'; }).join('');
-      return '<div class="question"><h5>' + step.order + '. ' + escapeHtml(step.title) + '</h5><p>' + escapeHtml(step.description) + '</p>' +
+      return '<div class="question"><h5>' + step.order + '. ' + escapeHtml(step.title) + '</h5>' +
+        (step.scopeNote ? '<p class="meta">このステップで変わらないこと: ' + escapeHtml(step.scopeNote) + '</p>' : '') +
+        '<p>' + escapeHtml(step.description) + '</p>' +
         (step.url ? '<p class="meta">URL: ' + escapeHtml(step.url) + '</p>' : '') +
         (step.type === 'script' ? '<p class="meta">登録スクリプト: ' + escapeHtml(step.scriptId || '') + '</p>' : '') +
         (inputs ? '<p class="meta">入力・確認項目:</p><ul>' + inputs + '</ul>' : '') +
-        '<p class="meta"><strong>完了条件:</strong> ' + escapeHtml(step.completionCriteria || '') + '</p></div>';
+        '<p class="meta"><strong>完了条件:</strong> ' + escapeHtml(step.completionCriteria || '') + '</p>' +
+        (step.verification && step.verification.detail ? '<p class="meta"><strong>完了確認（' + escapeHtml(step.verification.method || 'visual') + '）:</strong> ' + escapeHtml(step.verification.detail) + '</p>' : '') +
+        (step.failureRecovery && (step.failureRecovery.checks || []).length ? '<p class="meta"><strong>失敗した場合:</strong> ' + escapeHtml(step.failureRecovery.checks.join(' / ') + (step.failureRecovery.resumeFrom ? '（' + step.failureRecovery.resumeFrom + ' からやり直し）' : '')) + '</p>' : '') +
+        ((step.evidenceRefs || []).length ? '<p class="meta">根拠台帳: ' + escapeHtml(step.evidenceRefs.join(', ')) + '</p>' : '') +
+        '</div>';
     }).join('');
     document.getElementById('guide-draft-preview').innerHTML =
       '<h4>' + escapeHtml(guide.title || '') + '</h4><p>' + escapeHtml(guide.goal || '') + '</p>' +
@@ -1034,24 +1309,6 @@ const App = (function () {
       : '<div class="notice info">具体度チェック: 自動チェックで検出できる不足はありません。内容を読んで、実際に迷わず実行できる粒度か最終確認してください。</div>';
   }
 
-  async function preparePlanRefinePrompt() {
-    try {
-      const currentPlan = document.getElementById('guide-plan').value.trim();
-      if (!currentPlan) throw new Error('生成AIの設計案を「生成AIの作業ガイド設計案」欄へ貼り付けてから深掘りしてください。');
-      const feedback = document.getElementById('plan-refine-feedback').value.trim();
-      const result = await call('prepareWorkGuidePlanRefinePrompt', state.buildSession.buildSessionId, currentPlan, feedback);
-      document.getElementById('guide-plan-prompt').value = result.prompt;
-      document.getElementById('guide-plan-confirm').checked = false;
-      document.getElementById('guide-prompt').value = '';
-      document.getElementById('guide-json-prompt-stage').classList.add('hidden');
-      document.getElementById('plan-refine-feedback').value = '';
-      state.buildSession.data.lastAiPlanPrompt = result.prompt;
-      state.buildSession.data.approvedGuidePlan = '';
-      state.buildSession.data.lastAiPrompt = '';
-      toast('深掘りプロンプト（' + result.refinementCount + '回目）を作成しました。コピーして生成AIへ渡し、改善版設計案を貼り直してください。');
-    } catch (error) { showError(error); }
-  }
-
   async function prepareDepthCheckPrompt() {
     try {
       const result = await call('prepareWorkGuideDepthCheckPrompt', state.buildSession.buildSessionId);
@@ -1060,7 +1317,7 @@ const App = (function () {
       state.buildSession.data.lastAiPrompt = result.prompt;
       state.buildSession.data.lastAiPromptPhase = 'work_guide_depth_check';
       renderDepthFindings(result.findings || []);
-      toast('具体度チェックプロンプトを作成しました。コピーして生成AIへ渡し、修正版JSONを STEP 8 へ貼り直してください。');
+      toast('具体度チェックプロンプトを作成しました。コピーして生成AIへ渡し、修正版JSONを STEP 7 へ貼り直してください。');
     } catch (error) { showError(error); }
   }
 
@@ -1070,7 +1327,7 @@ const App = (function () {
       if (!feedback) throw new Error('修正してほしい点をレビュー指摘へ入力してください。');
       const result = await call('prepareWorkGuideRevisionPrompt', state.buildSession.buildSessionId, feedback);
       document.getElementById('revision-prompt').value = result.prompt;
-      toast('修正プロンプトを作成しました。コピーして生成AIへ渡し、修正版JSONを STEP 8 へ貼り直してください。');
+      toast('修正プロンプトを作成しました。コピーして生成AIへ渡し、修正版JSONを STEP 7 へ貼り直してください。');
     } catch (error) { showError(error); }
   }
 
@@ -1094,7 +1351,9 @@ const App = (function () {
       '<label>URL<input data-step-field="url" value="' + attr(step.url || '') + '"></label><label>参照資料ID（カンマ区切り）<input data-step-field="sourceReferences" value="' + attr((step.sourceReferences || []).join(',')) + '"></label></div>' +
       '<label>手順説明<textarea rows="3" data-step-field="description">' + escapeHtml(step.description || '') + '</textarea></label><label>入力項目 JSON<textarea rows="4" data-step-field="inputs">' + escapeHtml(JSON.stringify(step.inputs || [], null, 2)) + '</textarea></label>' +
       '<div class="field-grid"><label>登録スクリプトID<input data-step-field="scriptId" value="' + attr(step.scriptId || '') + '"></label><label>スクリプトパラメータ JSON<textarea rows="3" data-step-field="scriptParams">' + escapeHtml(JSON.stringify(step.scriptParams || {}, null, 2)) + '</textarea></label></div>' +
-      '<label>完了条件<textarea rows="2" data-step-field="completionCriteria">' + escapeHtml(step.completionCriteria || '') + '</textarea></label></div>';
+      '<label>完了条件<textarea rows="2" data-step-field="completionCriteria">' + escapeHtml(step.completionCriteria || '') + '</textarea></label>' +
+      '<div class="field-grid"><label>このステップで変わらないこと（scopeNote・空欄可）<input data-step-field="scopeNote" value="' + attr(step.scopeNote || '') + '"></label><label>根拠台帳エントリID（カンマ区切り・空欄可）<input data-step-field="evidenceRefs" value="' + attr((step.evidenceRefs || []).join(',')) + '"></label></div>' +
+      '<div class="field-grid"><label>完了確認 JSON（verification・空欄可）<textarea rows="2" data-step-field="verification">' + escapeHtml(step.verification ? JSON.stringify(step.verification, null, 2) : '') + '</textarea></label><label>失敗時対処 JSON（failureRecovery・空欄可）<textarea rows="2" data-step-field="failureRecovery">' + escapeHtml(step.failureRecovery ? JSON.stringify(step.failureRecovery, null, 2) : '') + '</textarea></label></div></div>';
   }
 
   function collectGuideEditor() {
@@ -1106,14 +1365,21 @@ const App = (function () {
     guide.steps = Array.from(document.querySelectorAll('.guide-step-editor')).map(function (editor, index) {
       const values = {};
       editor.querySelectorAll('[data-step-field]').forEach(function (field) { values[field.dataset.stepField] = field.value; });
-      const step = {
+      // 台帳由来の拡張フィールドを失わないよう、既存手順をベースに編集値を上書きする。
+      const step = Object.assign({}, guide.steps[index] || {}, {
         stepId: (guide.steps[index] && guide.steps[index].stepId) || 'S' + (index + 1), order: index + 1,
         type: values.type, title: values.title.trim(), description: values.description.trim(), url: values.url.trim(),
         completionCriteria: values.completionCriteria.trim(),
         sourceReferences: values.sourceReferences.split(',').map(function (value) { return value.trim(); }).filter(Boolean)
-      };
-      if (step.type === 'input') step.inputs = JSON.parse(values.inputs || '[]');
-      else { step.scriptId = values.scriptId.trim(); step.scriptParams = JSON.parse(values.scriptParams || '{}'); }
+      });
+      const scopeNote = (values.scopeNote || '').trim();
+      if (scopeNote) step.scopeNote = scopeNote; else delete step.scopeNote;
+      const evidenceRefs = (values.evidenceRefs || '').split(',').map(function (value) { return value.trim(); }).filter(Boolean);
+      if (evidenceRefs.length) step.evidenceRefs = evidenceRefs; else delete step.evidenceRefs;
+      if ((values.verification || '').trim()) step.verification = JSON.parse(values.verification); else delete step.verification;
+      if ((values.failureRecovery || '').trim()) step.failureRecovery = JSON.parse(values.failureRecovery); else delete step.failureRecovery;
+      if (step.type === 'input') { step.inputs = JSON.parse(values.inputs || '[]'); delete step.scriptId; delete step.scriptParams; }
+      else { step.scriptId = values.scriptId.trim(); step.scriptParams = JSON.parse(values.scriptParams || '{}'); delete step.inputs; }
       return step;
     });
     guide.steps.forEach(function (step, index) { step.stepId = 'S' + (index + 1); step.order = index + 1; });
@@ -1122,7 +1388,7 @@ const App = (function () {
 
   function syncGuideEditor() {
     try { state.editGuide = collectGuideEditor(); return true; }
-    catch (error) { showError(new Error('入力項目またはスクリプトパラメータの JSON が不正です: ' + error.message)); return false; }
+    catch (error) { showError(new Error('入力項目・スクリプトパラメータ・完了確認・失敗時対処の JSON が不正です: ' + error.message)); return false; }
   }
 
   function addGuideStep() {
@@ -1139,8 +1405,19 @@ const App = (function () {
   async function saveBuildDraft() {
     if (!syncGuideEditor()) return;
     try {
-      await call('saveWorkGuideBuildProgress', state.buildSession.buildSessionId, 10, { importedWorkGuide: state.editGuide });
-      toast('編集内容を一時保存しました。');
+      const result = await call('saveWorkGuideBuildProgress', state.buildSession.buildSessionId, 9, { importedWorkGuide: state.editGuide });
+      state.buildSession.currentStep = result.session.currentStep;
+      state.buildSession.data = result.session.data;
+      state.buildSession.readiness = result.session.readiness || state.buildSession.readiness;
+      if (result.deskReviewInvalidated) {
+        document.getElementById('guide-editor-panel').classList.add('hidden');
+        document.getElementById('guide-save-panel').classList.add('hidden');
+        document.getElementById('desk-review-result').innerHTML = '<div class="notice warning">編集後の最終稿でもう一度、机上実行レビューを行ってください。</div>';
+        renderBuilderStepper();
+        toast('編集内容を保存しました。最終稿の机上実行レビューが必要です。');
+      } else {
+        toast('編集内容を一時保存しました。');
+      }
     } catch (error) { showError(error); }
   }
 
@@ -1164,7 +1441,7 @@ const App = (function () {
       if (!result.success) throw clientError(result);
       output.className = 'validation-box success';
       output.innerHTML = '<strong>保存完了</strong><p>' + escapeHtml(result.workGuideId + ' v' + result.version) + '</p><p><a target="_blank" href="' + attr(result.documentUrl) + '">Googleドキュメント</a> / <a target="_blank" href="' + attr(result.jsonUrl) + '">JSON</a></p><p>会議終了から ' + result.minutesFromMeetingEnd + '分（15分目標: ' + (result.within15Minutes ? '達成' : '超過') + '）</p>';
-      state.buildSession.currentStep = 11;
+      state.buildSession.currentStep = 10;
       state.buildSession.status = 'completed';
       document.getElementById('cancel-guide-build-button').classList.add('hidden');
       toast('作業ガイドを2形式で保存しました。');
@@ -1281,7 +1558,12 @@ const App = (function () {
   }
 
   function aiPhaseLabel(phase) {
-    return ({ meeting_analysis: '会議解析・クイズ生成', work_guide_generation: '作業ガイド初稿', work_guide_review_revision: 'AI検収・自動修正', human_requested_revision: '人の指摘による修正', work_guide_revision: '手動レビュー後の修正' })[phase] || phase;
+    return ({
+      meeting_analysis: '会議解析・クイズ生成', ledger_init: '骨格抽出・台帳初期化', ledger_interview: '取材ラウンド', ledger_change: '知識台帳の確認・降格',
+      desk_review: '机上実行レビュー', work_guide_generation: '作業ガイド生成（台帳の組版）', work_guide_review_revision: 'AI検収・自動修正',
+      human_requested_revision: '人の指摘による修正', work_guide_revision: '手動レビュー後の修正', work_guide_depth_check: '具体度チェック',
+      work_guide_depth_refinement: '具体度チェック（旧・自動）', work_guide_plan_refinement: '設計案の深掘り（旧）', work_guide_alignment: '設計案の確認（旧）'
+    })[phase] || phase;
   }
 
   async function runPreflight(workGuideId, versionNo) {
@@ -1364,6 +1646,7 @@ const App = (function () {
     const total = steps.length;
     let actionIndex = 0;
     let html = '<div class="exec-step-lead"><span class="exec-step-count">ステップ ' + (stepIndex + 1) + ' / ' + total + '</span><h4>' + escapeHtml(step.title) + '</h4></div>';
+    if (step.scopeNote) html += '<p class="meta">このステップで変わらないこと: ' + escapeHtml(step.scopeNote) + '</p>';
     if (step.description) html += '<p>' + escapeHtml(step.description) + '</p>';
     if (step.url) {
       actionIndex++;
@@ -1379,7 +1662,12 @@ const App = (function () {
       html += actionCardHtml(actionIndex, '作業した結果を入力します', fields);
     }
     if (step.completionCriteria) html += '<div class="completion-note"><strong>完了条件:</strong> ' + escapeHtml(step.completionCriteria) + '</div>';
-    html += '<div class="button-row" style="margin-top:1rem"><button onclick="App.saveCurrentStep()">' + (stepIndex + 1 >= total ? 'この手順を保存して完了へ' : 'この手順を完了して次へ →') + '</button></div>';
+    if (step.verification && step.verification.detail) html += '<div class="completion-note"><strong>完了確認（' + escapeHtml(step.verification.method || 'visual') + '）:</strong> ' + escapeHtml(step.verification.detail) + '</div>';
+    if (step.failureRecovery && (step.failureRecovery.checks || []).length) {
+      html += '<div class="notice warning" style="margin-top:.9rem"><strong>失敗した場合に確認する点:</strong><ul>' + step.failureRecovery.checks.map(function (check) { return '<li>' + escapeHtml(check) + '</li>'; }).join('') + '</ul>' + (step.failureRecovery.resumeFrom ? '<p>やり直す手順: ' + escapeHtml(step.failureRecovery.resumeFrom) + '</p>' : '') + '</div>';
+    }
+    const stepExternalRefs = ((execution.executionData && execution.executionData.externalReferences) || []).filter(function (reference) { return String(reference.stepId) === String(step.stepId); });
+    html += '<div class="button-row" style="margin-top:1rem"><button onclick="App.saveCurrentStep()">' + (stepIndex + 1 >= total ? 'この手順を保存して完了へ' : 'この手順を完了して次へ →') + '</button><button class="secondary" onclick="App.recordExternalReference()">ガイド外の資料を見た / 人に聞いた' + (stepExternalRefs.length ? '（' + stepExternalRefs.length + '件記録済み）' : '') + '</button></div>';
     document.getElementById('execution-step').innerHTML = html;
   }
 
@@ -1413,6 +1701,19 @@ const App = (function () {
       state.execution.currentStepId = result.nextStepId;
       renderExecution();
       toast('手順を保存しました。');
+    } catch (error) { showError(error); }
+  }
+
+  async function recordExternalReference() {
+    const execution = state.execution;
+    if (!execution || !execution.currentStepId) return showError(new Error('記録対象の手順がありません。'));
+    const note = window.prompt('ガイド外で何を調べたか、または誰に何を聞いたかを1行で入力してください。');
+    if (note === null || !note.trim()) return;
+    try {
+      const result = await call('recordExecutionExternalReference', execution.executionId, execution.currentStepId, note.trim());
+      execution.executionData = result.executionData;
+      renderExecution();
+      toast('ガイド外参照を記録しました。次の版を作るときの取材対象になります。');
     } catch (error) { showError(error); }
   }
 
@@ -1595,12 +1896,14 @@ const App = (function () {
     loadTranscriptWorkflows: loadTranscriptWorkflows, selectTranscript: selectTranscript, completeTranscript: completeTranscript, reopenTranscript: reopenTranscript,
     selectMeeting: selectMeeting, prepareAnalysisJsonPrompt: prepareAnalysisJsonPrompt, validateAnalysis: validateAnalysis, saveAnalysis: saveAnalysis, openQuiz: openQuiz,
     answerSingle: answerSingle, continueSingle: continueSingle, submitBatchQuiz: submitBatchQuiz, submitCurrentQuiz: submitCurrentQuiz, retryCurrentQuiz: retryCurrentQuiz,
-    loadActions: loadActions, startBuild: startBuild, reviseGuide: reviseGuide, cancelBuild: cancelBuild, searchSources: searchSources, prepareGuidePlanPrompt: prepareGuidePlanPrompt, prepareGuidePrompt: prepareGuidePrompt,
-    preparePlanRefinePrompt: preparePlanRefinePrompt, prepareDepthCheckPrompt: prepareDepthCheckPrompt,
-    importGuide: importGuide, prepareRevisionPrompt: prepareRevisionPrompt, addGuideStep: addGuideStep, deleteGuideStep: deleteGuideStep, moveGuideStep: moveGuideStep,
+    loadActions: loadActions, startBuild: startBuild, reviseGuide: reviseGuide, cancelBuild: cancelBuild, searchSources: searchSources,
+    prepareSkeletonPrompt: prepareSkeletonPrompt, importSkeleton: importSkeleton, prepareInterviewPrompt: prepareInterviewPrompt, importInterviewReply: importInterviewReply,
+    confirmLedgerEntry: confirmLedgerEntry, deferLedgerEntry: deferLedgerEntry, reopenLedgerEntry: reopenLedgerEntry, deferAllOpenEntries: deferAllOpenEntries,
+    prepareGuidePrompt: prepareGuidePrompt, importGuide: importGuide, prepareDeskReviewPrompt: prepareDeskReviewPrompt, importDeskReviewReply: importDeskReviewReply,
+    prepareDepthCheckPrompt: prepareDepthCheckPrompt, prepareRevisionPrompt: prepareRevisionPrompt, addGuideStep: addGuideStep, deleteGuideStep: deleteGuideStep, moveGuideStep: moveGuideStep,
     duplicateGuideStep: duplicateGuideStep, saveBuildDraft: saveBuildDraft, saveGuide: saveGuide, loadGuides: loadGuides,
     openGuideDetail: openGuideDetail, approveSelectedGuide: approveSelectedGuide, requestSelectedGuideRevision: requestSelectedGuideRevision, backToGuideList: backToGuideList, startExecution: startExecution, loadExecutions: loadExecutions, openExecution: openExecution,
-    saveCurrentStep: saveCurrentStep, pauseExecution: pauseExecution, resumeExecution: resumeExecution, completeExecution: completeExecution,
+    saveCurrentStep: saveCurrentStep, recordExternalReference: recordExternalReference, pauseExecution: pauseExecution, resumeExecution: resumeExecution, completeExecution: completeExecution,
     runDiagnostics: runDiagnostics, loadAllowedActions: loadAllowedActions, registerAction: registerAction, unregisterAction: unregisterAction,
     loadAutomationPanel: loadAutomationPanel, toggleAutoRegister: toggleAutoRegister, runAutoRegisterNow: runAutoRegisterNow, loadAutomationCandidates: loadAutomationCandidates, saveAiSettings: saveAiSettings, testAiConnection: testAiConnection,
     copyText: copyText

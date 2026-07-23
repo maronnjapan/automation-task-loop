@@ -60,11 +60,17 @@ const APP_CONFIG = Object.freeze({
   }),
   defaultAiMaxRepairAttempts: 1,
   // 作業ガイドの具体度チェック。しきい値未満の手順は「抽象的すぎる」として指摘し、
-  // 生成AIとの追加往復（手動: 具体度チェックプロンプト / 全自動: 追加修正）を促す。
+  // 生成AIとの追加往復（手動: 具体度チェックプロンプト）を促す。
   workGuideDepth: Object.freeze({
     minDescriptionLength: 40,
-    minCompletionCriteriaLength: 16,
-    maxAutoRefinements: 2
+    minCompletionCriteriaLength: 16
+  }),
+  // 知識台帳の取材ループ（GUIDE_DEEPDIVE_DESIGN §5）。1ラウンドの質問上限と、
+  // 準備度スコアが増えないまま続いたら降格を提案するラウンド数。
+  ledgerInterview: Object.freeze({
+    maxQuestionsPerRound: 5,
+    maxAnswerCharacters: 20000,
+    stagnantRoundsBeforeDemotionHint: 2
   }),
   automationTimeBudgetMs: 240000,
   managementSchemaVersion: '2026-07-ai-automation-v1'
@@ -357,11 +363,10 @@ function automateActionGuide_(action) {
   const data = parseJsonCell_(session.dataJson, {});
   const selectedSources = buildSelectedSourceContext_([meeting.transcriptFileId]);
   data.knownPrerequisites = [];
-  data.prerequisiteAnswers = {};
   data.selectedSources = selectedSources.map(function (source) {
     return { fileId: source.fileId, fileName: source.fileName, url: source.url, snapshotAt: source.snapshotAt };
   });
-  const context = {
+  const sourceContext = {
     action: data.action,
     meeting: {
       meetingId: meeting.meetingId,
@@ -377,16 +382,51 @@ function automateActionGuide_(action) {
     workGuideId: '',
     version: 1
   };
-  updateAutomaticWorkGuideBuild_(session.buildSessionId, 7, data);
+  updateAutomaticWorkGuideBuild_(session.buildSessionId, 4, data);
 
   let reviewedValue = null;
   let conversationId = '';
-  if (isPlainObject_(data.importedWorkGuide) && isPlainObject_(data.autoReview)) {
+  if (isPlainObject_(data.importedWorkGuide) && isPlainObject_(data.autoReview) && isPlainObject_(data.skeleton) && Array.isArray(data.ledger)) {
     validateWorkGuide_(data.importedWorkGuide);
+    const resumedLedgerErrors = assessGuideAgainstLedger_(data.importedWorkGuide, data.ledger);
+    assertApp_(!resumedLedgerErrors.length, 'LEDGER_MISMATCH', '再開した自動生成ガイドが知識台帳と一致しません。', { errors: resumedLedgerErrors });
     reviewedValue = { workGuide: data.importedWorkGuide, review: data.autoReview };
   } else {
+    // P1: 文字起こしから骨格と台帳を初期化する。API経路でも手動経路と同じ状態モデルを使う。
+    const initialized = runAiJsonTask_({
+      prompt: buildGuideSkeletonPrompt_(sourceContext, { jsonOnly: true }),
+      phase: 'ledger_init',
+      meta: { meetingId: meeting.meetingId, actionId: action.actionId, buildSessionId: session.buildSessionId },
+      validator: function (value) { return normalizeSkeletonLedgerResult_(value); }
+    });
+    data.skeleton = initialized.value.skeleton;
+    data.ledger = materializeMissingLedgerEntries_(data.skeleton, initialized.value.entries, false, '全自動経路で不足スロットを追加');
+    // 全自動経路では人へ質問できない。unknown / assumed は黙って消さず、すべて作業前確認へ降格する。
+    data.ledger.forEach(function (entry) {
+      if (entry.confidence !== 'confirmed') {
+        entry.deferred = true;
+        entry.updatedAt = nowIso_();
+      }
+    });
+    data.gatePassed = true;
+    pushLedgerAudit_(data, 'auto_init', '全自動で台帳' + data.ledger.length + '件を初期化し、未確認項目を作業前確認へ降格');
+    const readiness = computeLedgerReadiness_(data.skeleton, data.ledger);
+    assertApp_(readiness.gatePassed, 'GATE_NOT_PASSED', '全自動経路の準備度ゲートを通過できません。', { holes: readiness.holes });
+    updateAutomaticWorkGuideBuild_(session.buildSessionId, 6, data);
+
+    const guideContext = {
+      action: data.action,
+      meeting: sourceContext.meeting,
+      skeleton: data.skeleton,
+      confirmedEntries: data.ledger.filter(function (entry) { return entry.confidence === 'confirmed'; }),
+      deferredEntries: data.ledger.filter(function (entry) { return entry.deferred === true; }),
+      allowedScripts: sourceContext.allowedScripts,
+      selectedSources: selectedSources,
+      workGuideId: '',
+      version: 1
+    };
     const generated = runAiJsonTask_({
-      prompt: buildWorkGuidePrompt_(context),
+      prompt: buildLedgerGuidePrompt_(guideContext, { jsonOnly: true }),
       phase: 'work_guide_generation',
       meta: { meetingId: meeting.meetingId, actionId: action.actionId, buildSessionId: session.buildSessionId },
       validator: function (guide) {
@@ -394,37 +434,63 @@ function automateActionGuide_(action) {
         guide.version = 1;
         guide.schemaVersion = APP_CONFIG.schemaVersion;
         guide.sourceSnapshots = JSON.parse(JSON.stringify(data.selectedSources));
-        return validateWorkGuide_(guide);
+        validateWorkGuide_(guide);
+        const ledgerErrors = assessGuideAgainstLedger_(guide, data.ledger);
+        if (ledgerErrors.length) throw new AppError('VALIDATION_ERROR', '生成ガイドが知識台帳と一致しません。', { errors: ledgerErrors });
+        return guide;
       }
     });
     const reviewed = runAiJsonTask_({
-      prompt: buildWorkGuideAutoReviewPrompt_(context, generated.value),
+      prompt: buildWorkGuideAutoReviewPrompt_(Object.assign({}, sourceContext, {
+        skeleton: data.skeleton,
+        confirmedLedger: guideContext.confirmedEntries,
+        deferredLedger: guideContext.deferredEntries
+      }), generated.value),
       phase: 'work_guide_review_revision',
       conversationId: generated.conversationId,
       meta: { meetingId: meeting.meetingId, actionId: action.actionId, buildSessionId: session.buildSessionId },
-      validator: function (value) { return validateAutoReviewResult_(value, generated.value); }
+      validator: function (value) {
+        const validated = validateAutoReviewResult_(value, generated.value);
+        const ledgerErrors = assessGuideAgainstLedger_(validated.workGuide, data.ledger);
+        if (ledgerErrors.length) throw new AppError('VALIDATION_ERROR', 'AI検収後のガイドが知識台帳と一致しません。', { errors: ledgerErrors });
+        return validated;
+      }
     });
     reviewedValue = reviewed.value;
     conversationId = generated.conversationId;
-    // 具体度チェック: 抽象的な手順が残る間は、上限回数まで生成AIへ追加修正を依頼する。
-    for (let depthRound = 1; depthRound <= APP_CONFIG.workGuideDepth.maxAutoRefinements; depthRound += 1) {
-      const depthFindings = assessWorkGuideDepth_(reviewedValue.workGuide);
-      if (!depthFindings.length) break;
-      const deepened = runAiJsonTask_({
-        prompt: buildWorkGuideDepthCheckPrompt_(reviewedValue.workGuide, depthFindings),
-        phase: 'work_guide_depth_refinement',
-        conversationId: conversationId,
-        meta: { meetingId: meeting.meetingId, actionId: action.actionId, buildSessionId: session.buildSessionId },
-        validator: function (guide) {
-          guide.workGuideId = '';
-          guide.version = 1;
-          guide.schemaVersion = APP_CONFIG.schemaVersion;
-          guide.sourceSnapshots = JSON.parse(JSON.stringify(data.selectedSources));
-          return validateWorkGuide_(guide);
-        }
+    // 机上実行レビュー（P4）: 生成・検収とは別コンテキストの「初見の作業者」に通し読みさせる。
+    // 自動経路では人へ質問できないため、詰まりは「作業前に確認」へ自動降格し、残存リスクに記録する。
+    const deskReviewed = runAiJsonTask_({
+      prompt: buildDeskReviewPrompt_(reviewedValue.workGuide, { jsonOnly: true }),
+      phase: 'desk_review',
+      meta: { meetingId: meeting.meetingId, actionId: action.actionId, buildSessionId: session.buildSessionId },
+      validator: function (value) { return validateDeskReviewResult_(value); }
+    });
+    if (deskReviewed.value.findings.length) {
+      const deskFindings = deskReviewed.value.findings.map(function (finding) {
+        finding.stepRef = resolveDeskReviewStepRef_(data, finding.stepRef);
+        return finding;
       });
-      reviewedValue.workGuide = deepened.value;
-      reviewedValue.review.changesMade = reviewedValue.review.changesMade.concat(['具体度チェック' + depthRound + '回目: ' + depthFindings.length + '件の不足を修正']);
+      const deskLedger = applyLedgerDiff_(data.ledger, deskFindings.map(function (finding) {
+        return {
+          stepRef: finding.stepRef,
+          slot: finding.slot,
+          claim: finding.claim,
+          confidence: 'unknown',
+          deferred: true,
+          evidence: { type: 'ai_knowledge', ref: '全自動の机上実行レビュー', quote: '' }
+        };
+      }));
+      data.ledger = deskLedger.entries;
+      data.ledger.forEach(function (entry) {
+        if (entry.confidence !== 'confirmed') entry.deferred = true;
+      });
+      applyDeskReviewFindingsToGuide_(reviewedValue.workGuide, deskFindings);
+      reviewedValue.review.remainingRisks = reviewedValue.review.remainingRisks.concat(deskFindings.map(function (finding) {
+        return '机上実行レビュー[' + finding.type + ']' + (finding.stepRef ? ' ' + finding.stepRef : '') + ': ' + finding.claim + '（作業前に確認へ降格）';
+      }));
+      reviewedValue.review.changesMade = reviewedValue.review.changesMade.concat(['机上実行レビューの詰まり' + deskFindings.length + '件を前提条件「作業前に確認」へ降格']);
+      pushLedgerAudit_(data, 'desk_review', '全自動の机上実行レビュー' + deskFindings.length + '件を作業前確認へ降格');
     }
     const remainingDepthFindings = assessWorkGuideDepth_(reviewedValue.workGuide);
     if (remainingDepthFindings.length) {
@@ -432,7 +498,18 @@ function automateActionGuide_(action) {
     }
     data.importedWorkGuide = reviewedValue.workGuide;
     data.autoReview = reviewedValue.review;
-    updateAutomaticWorkGuideBuild_(session.buildSessionId, 10, data);
+    data.deskReview = {
+      passed: deskReviewed.value.findings.length === 0,
+      findings: deskReviewed.value.findings.map(function (finding) {
+        finding.stepRef = resolveDeskReviewStepRef_(data, finding.stepRef);
+        return finding;
+      }),
+      trace: deskReviewed.value.trace,
+      at: nowIso_()
+    };
+    const finalLedgerErrors = assessGuideAgainstLedger_(reviewedValue.workGuide, data.ledger);
+    assertApp_(!finalLedgerErrors.length, 'LEDGER_MISMATCH', '机上実行レビュー後のガイドが知識台帳と一致しません。', { errors: finalLedgerErrors });
+    updateAutomaticWorkGuideBuild_(session.buildSessionId, 9, data);
   }
   const saved = saveWorkGuide({
     requestToken: 'auto-' + action.actionId + '-initial',
@@ -890,55 +967,232 @@ function buildWorkGuidePrompt_(context, approvedPlan) {
   ].join('\n');
 }
 
-function buildWorkGuidePlanPrompt_(context) {
+// 台帳エントリのスキーマ（§4.1）。P1・P2 プロンプトへそのまま差し込む。
+function ledgerEntryFormatText_() {
   return [
-    'あなたは、作業ガイドを作る前に、人とガイドの目的・作業イメージを合わせるための設計案を作ります。',
-    'この段階ではアプリ用JSONを作りません。JSON、コードブロック、機械向けのキー名は使わず、読みやすい日本語で返してください。',
-    '根拠資料にない事実は推測せず、不明点は「作業前に確認すること」へ明記してください。',
-    '設計案は一度で完成させる必要はありません。このあと人と何度か往復して具体化するため、品質基準へ届かない箇所は「## 7. まだ具体化できていない点と質問」で人へ質問してください。',
+    '台帳エントリの形式（1件ごとにこの形。confidence は3状態のみ）:',
+    JSON.stringify({
+      entryId: 'L-012',
+      stepRef: 'SK-3',
+      slot: 'url | ui_label | input_value | verification | failure_recovery | precondition | caution | decision_rule | scope',
+      claim: '何についての事実か（例: APIトークン作成画面のURL）',
+      value: '具体値。まだ無い場合は空文字',
+      evidence: { type: 'transcript | user_answer | artifact | ai_knowledge', ref: '出典（発言位置・回答番号・貼り付け資料など）', quote: '該当箇所の引用' },
+      confidence: 'confirmed | assumed | unknown',
+      note: '取り違え注意・補足（例: Global API Key の画面ではない）'
+    }, null, 2),
+    '',
+    'スロットの意味:',
+    '- url: 開く画面のURL。URLが存在しない作業は value を「該当なし」にして confirmed にする。',
+    '- ui_label: 選ぶメニュー・ボタン・タブの画面表記どおりの名称。',
+    '- input_value: 入力・設定する値の形式・桁数・具体例・取り違え注意。',
+    '- verification: 完了を客観的に判定する方法（表示される文言 / 返る値 / 実行する確認操作）。',
+    '- failure_recovery: 失敗時に確認する点と、どの手順からやり直すか。',
+    '- precondition: そのステップに必要な権限・状態・事前準備。',
+    '- caution: 不可逆操作・課金・秘密情報・データ削除の注意。',
+    '- decision_rule: 判断が必要な箇所の選択肢と判断基準。',
+    '- scope: このステップで変わらないこと・やらないこと。'
+  ].join('\n');
+}
+
+// P1: 骨格抽出＋台帳初期化（取材ループの前に1回）
+function buildGuideSkeletonPrompt_(context, options) {
+  options = options || {};
+  return [
+    'あなたは、会議の文字起こしから「作業ガイドの骨格」と「判明している事実の台帳」を作る取材記者です。',
+    options.jsonOnly
+      ? 'この段階ではガイド本文を書きません。出力は {"skeleton": …, "ledger": […]} のJSONオブジェクトだけにしてください。コードブロックや説明文は禁止です。'
+      : 'この段階ではガイド本文を書きません。次の2つだけを出力してください。',
+    '',
+    options.jsonOnly ? '' : '1. 作業の骨格（人が読む日本語）',
+    options.jsonOnly ? '' : '   - 作業の目的と、完了したと客観的に言える状態',
+    options.jsonOnly ? '' : '   - 実行順のステップ候補（粗くてよい。各ステップに skeletonId を SK-1 形式で振る）',
+    options.jsonOnly ? '' : '   - この作業に含めない範囲',
+    options.jsonOnly ? '' : '',
+    options.jsonOnly
+      ? '出力JSONの形式: { "skeleton": { "purpose": "…", "completion": "…", "steps": [{ "skeletonId": "SK-1", "title": "…" }], "outOfScope": ["…"] }, "ledger": [台帳エントリの配列] }'
+      : '2. 骨格と事実台帳のJSON（最後に1つの ```json ブロックで出力。アプリが取り込みます）',
+    options.jsonOnly ? '' : '   形式: { "skeleton": { "purpose": "…", "completion": "…", "steps": [{ "skeletonId": "SK-1", "title": "…" }], "outOfScope": ["…"] }, "ledger": [台帳エントリの配列] }',
+    '   - 文字起こしに出てくる具体情報（URL、ツール名、画面や項目の呼び名、値、期限、担当、制約）を',
+    '     すべてエントリ化する。evidence.quote に該当発言を引用し、confidence は confirmed とする。',
+    '     ただし発言が曖昧な場合（「例の画面」「あの設定」等）は claim だけ立てて unknown とする。',
+    '   - 各ステップについて、url / ui_label / input_value / verification / failure_recovery /',
+    '     precondition / caution / decision_rule / scope の各スロットの現状を洗い出す。',
+    '   - 文字起こしに無いが一般知識から推測できる値は、confidence: assumed で登録してよい。',
+    '     推測であることを evidence.type: ai_knowledge と note に必ず書く。',
+    '   - 文字起こしに無く推測もできないものは unknown で登録する。発明は禁止。',
+    '   - 「事前に人へ確認する質問」の一覧がある場合は、それぞれ対応する unknown エントリを立てる。',
+    '   - knownPrerequisites は本人が画面へ入力した既知情報なので evidence.type: user_answer / confidence: confirmed で登録する。',
+    '   - priorWorkGuide がある場合は前版ガイドという artifact として再利用できるが、interviewSeeds で不足が報告された箇所は unknown に戻す。',
+    '',
+    ledgerEntryFormatText_(),
     '',
     workGuideQualityBar_(),
-    '',
-    '次の見出しをそのまま使ってください。',
-    '',
-    '# 作業ガイド設計案',
-    '## 1. このガイドで何をするか',
-    '- 対象、目的、ガイドを使う人を簡潔に説明する。',
-    '## 2. 完了した状態',
-    '- 何を確認できれば作業完了かを客観的に書く。',
-    '## 3. 必要な具体作業',
-    '- 実際に手を動かす順序で番号を付け、作業ごとに「開く画面とURL」「選ぶメニューや押すボタンの名称」「入力する値（形式と例）」「完了をどう確認するか」「失敗した場合の対処」を書く。',
-    '- 根拠資料から分からない箇所は推測せず、その作業の中に【要確認】と明記する。',
-    '## 4. 作業前に確認すること',
-    '- 権限、対象、期限、必要資料、不明点、承認の要否を列挙する。',
-    '## 5. 注意点・失敗しやすい点',
-    '- 取り返しのつかない操作、誤解しやすい判断、残存リスクを書く。',
-    '## 6. 今回のガイドに含めないこと',
-    '- 別作業とすべき範囲や、根拠不足で扱えない範囲を書く。',
-    '## 7. まだ具体化できていない点と質問',
-    '- 品質基準に達していない作業と、達するために人へ聞きたいことを番号付きで書く。無ければ「なし」と書く。',
     '',
     '入力コンテキスト:',
     JSON.stringify(context, null, 2)
   ].join('\n');
 }
 
-function buildWorkGuidePlanRefinePrompt_(context, currentPlan, feedback) {
+// P2: 取材ラウンド（毎ラウンド同じ形で呼ぶ。この設計の中心）
+function buildLedgerInterviewPrompt_(context, answersText) {
   return [
-    'あなたは、作業ガイド設計案を品質基準に達するまで人と往復しながら具体化する編集者です。',
-    '下記の「現在の設計案」を品質基準と照合し、抽象的なままの作業をすべて具体化した改善版設計案を返してください。',
-    'この段階ではアプリ用JSONを作りません。JSON、コードブロック、機械向けのキー名は使わず、読みやすい日本語で返してください。',
-    '根拠資料と人からの回答にない事実は推測せず、分からない箇所は【要確認】として残し、「## 7. まだ具体化できていない点と質問」で人へ質問してください。',
-    '出力は現在の設計案と同じ見出し構成（# 作業ガイド設計案、## 1〜## 7）の全文とし、差分だけを返さないでください。',
+    'あなたは、作業ガイドを品質基準の水準にするための取材記者です。',
+    'あなたの仕事は文章を書くことではなく、台帳の unknown と assumed を減らす',
+    '「最も価値の高い質問を、相手が最も答えやすい形で」作ることです。',
+    '',
+    '次の6セクションを、この順番・この見出しで必ず出力してください。',
+    '',
+    '## 1. 回答の理解確認',
+    '前回の回答をどう理解したか2〜4行で要約する（誤解があれば人がここで気づける）。初回は「初回のため無し」と書く。',
+    '',
+    '## 2. 台帳の更新',
+    '前回の回答・貼り付け資料から追加・confirmed 化・修正するエントリだけを1つの ```json ブロック（エントリの配列）で出力。',
+    '既存エントリの更新は同じ entryId を使う。追加は entryId を空文字にしてよい。無ければ空配列 [] を出力。',
+    '',
+    '## 3. 矛盾・気づき',
+    '台帳内、文字起こしとの間、回答間の食い違い。無ければ「なし」。',
+    '',
+    '## 4. 仮値の監査',
+    '現在 assumed のまま残っている値の一覧。それぞれ次の質問で確認するか、確認不要の理由を書く。',
+    '',
+    '## 5. 準備度',
+    'ステップごとに、埋まったスロット/必須スロット数と、前回からの増減を1行ずつ。',
+    '',
+    '## 6. 次の質問（最大5問）',
+    '質問設計のルール:',
+    '- 想起させず確認させる。仮値がある場合は「恐らく○○だと思われます。合っていますか？」形式にする。',
+    '- 説明ではなく現物を求める。「URLをそのまま貼ってください」「コマンドを実行して出力を',
+    '  貼ってください」「画面の文言をコピーして貼ってください」を積極的に使う。',
+    '- 選択式（はい/いいえ/3択）を優先し、自由記述は最後の手段にする。',
+    '- 各質問の先頭を「Q1」のような番号にし、[対象: SK-n / スロット: xxx] と「なぜ聞くか」を1行添える。',
+    '- 影響度×不確実性の高い順に並べる。',
+    '- ステップの列自体が怪しい場合は、個別質問の代わりに「作業を頭の中で通しでやるつもりで、',
+    '  やることを順に書き出してください。思い出せない箇所は『？』と書いてください」と依頼してよい。',
+    '- 2ラウンド答えられていない質問は、質問し続けず「作業前に確認へ降格しますか？」と提案する。',
+    '- 「わからない」という回答も事実として受け止め、誰なら知っているか・どの画面や資料を見れば分かるかを次に提案する。',
+    '- 台帳内・文字起こし・回答間の矛盾は黙って片方を採らず、必ず次の質問で人へ裁定を求める。',
+    '- 最初の1〜2ラウンドは全体の大きな穴を幅広く確認し、その後は「今回はSK-nだけを完成させます」と宣言して1ステップ集中へ切り替える。',
+    '',
+    ledgerEntryFormatText_(),
     '',
     workGuideQualityBar_(),
-    feedback ? '\n人からの回答・追加情報・指摘（最優先で反映する）:\n' + feedback : '',
     '',
-    '現在の設計案:',
-    currentPlan,
+    '作業の骨格:',
+    JSON.stringify(context.skeleton, null, 2),
+    '',
+    '現在の台帳（全文）:',
+    JSON.stringify(context.ledger, null, 2),
+    '',
+    '前回の質問と人の回答・貼り付け資料:',
+    nonEmptyString_(answersText) ? answersText : '（初回ラウンドのため無し。台帳の unknown と assumed から質問を作ってください）',
+    '',
+    '過去ラウンドと質問履歴（同じ質問を2回以上繰り返さないために使う）:',
+    JSON.stringify({
+      rounds: context.interviewRounds || [],
+      previousQuestions: context.previousQuestions || [],
+      questionAttempts: context.questionAttempts || {},
+      executionFeedbackSeeds: context.interviewSeeds || []
+    }, null, 2)
+  ].join('\n');
+}
+
+// P3: ガイド生成（準備度ゲート通過後に1回）。生成は「創作」ではなく「組版」。
+function buildLedgerGuidePrompt_(context, options) {
+  options = options || {};
+  return [
+    'あなたは、確認済みの事実台帳を作業ガイドへ組版する編集者です。創作はしません。',
+    '厳守事項:',
+    '- 台帳で confidence: confirmed のエントリだけを事実として使う。',
+    '  台帳にない URL・画面名・入力値・確認方法を新しく書くことを禁止する。',
+    '- 「作業前に確認へ降格されたエントリ」は、prerequisites に',
+    '  「作業前に確認: <claim>（現時点の見立て: <value>）」の形で必ず出力する。value が空なら見立て部分は省略する。',
+    '- 各ステップは次の構成で書く: description の冒頭に「このステップで何が起き、何が変わらないか」/',
+    '  事前チェック / 操作（URL → 画面表記どおりの選択 → 値の形式・例・取り違え注意）/',
+    '  客観的な完了確認 / 失敗した場合に確認する点とやり直すステップ。',
+    '- precondition は事前チェック、caution は warnings または該当手順の注意、decision_rule は操作内の判断基準、scope は scopeNote へ反映する。',
+    '- stepRef がある confirmed エントリは省略せず、各ステップの evidenceRefs に使用した台帳 entryId をすべて記録する。',
+    options.jsonOnly
+      ? '- 出力は JSON オブジェクトのみ。コードブロックや前後の説明文を書かない。'
+      : '- 出力は JSON オブジェクトのみを ```json コードブロックで囲んで返す。前後に説明文を書かない。',
+    'workGuideId と version は入力コンテキストの値をそのまま使います。workGuideId が空文字の場合は空文字のままにし、新しいIDを発明しないでください。',
+    'schemaVersion は ' + APP_CONFIG.schemaVersion + '。手順タイプは input または script のみで、表示専用手順は禁止です。',
+    'script は allowedScripts にある scriptId だけ使用できます。不適切なら input にします。',
+    'sourceReferences には selectedSources の fileId だけを指定します。',
+    '',
+    workGuideQualityBar_(),
+    '',
+    '出力スキーマ:',
+    JSON.stringify({
+      schemaVersion: APP_CONFIG.schemaVersion, workGuideId: context.workGuideId || '', version: context.version || 1,
+      title: context.action && context.action.title, goal: 'この作業の完了状態', assumptions: ['背景・既知事項'],
+      prerequisites: ['必要な権限・事前状態', '作業前に確認: 降格されたエントリ（現時点の見立て: …）'], warnings: ['注意事項'],
+      steps: [{
+        stepId: 'S1', order: 1, type: 'input', title: '手順名',
+        description: 'このステップで何が起きるか。開く画面・押すボタン・入力する値（形式と例）・取り違え注意まで書く',
+        url: 'https://...', inputs: [{ inputId: 'I1', label: '結果', inputType: 'text', required: true }],
+        completionCriteria: '客観的に確認できる完了条件',
+        verification: { method: 'visual | command | value_match', detail: '表示される文言 / 実行する確認コマンドと期待出力 / 一致すべき値' },
+        failureRecovery: { checks: ['失敗時に確認する点'], resumeFrom: 'S1' },
+        scopeNote: 'このステップで変わらないこと・やらないこと',
+        evidenceRefs: ['L-001'], sourceReferences: []
+      }],
+      sourceSnapshots: (context.selectedSources || []).map(function (source) { return { fileId: source.fileId, fileName: source.fileName, snapshotAt: source.snapshotAt }; })
+    }, null, 2),
+    '',
+    '作業の骨格:',
+    JSON.stringify(context.skeleton, null, 2),
+    '',
+    '事実台帳（confirmed）:',
+    JSON.stringify(context.confirmedEntries, null, 2),
+    '',
+    '作業前に確認へ降格されたエントリ（prerequisites へ必ず反映する）:',
+    JSON.stringify(context.deferredEntries, null, 2),
     '',
     '入力コンテキスト:',
-    JSON.stringify(context, null, 2)
+    JSON.stringify({
+      action: context.action, meeting: context.meeting, allowedScripts: context.allowedScripts,
+      selectedSources: (context.selectedSources || []).map(function (source) { return { fileId: source.fileId, fileName: source.fileName, snapshotAt: source.snapshotAt }; }),
+      workGuideId: context.workGuideId || '', version: context.version || 1
+    }, null, 2)
+  ].join('\n');
+}
+
+// P4: 机上実行レビュー（生成とは別ロール・別コンテキストで1回）。
+// 台帳はあえて渡さない — 初見の作業者と同じ条件にする（§8）。
+function buildDeskReviewPrompt_(guide, options) {
+  options = options || {};
+  const findingSchema = JSON.stringify({
+    passed: false,
+    trace: ['Step 1 を実行中 → できたこと → 詰まり [MISSING_INFO]: 内容（どの記述か）'],
+    findings: [{ stepRef: 'S2', slot: 'url | ui_label | input_value | verification | failure_recovery | precondition | caution | decision_rule | scope', type: 'MISSING_INFO', claim: '不足している情報の内容' }]
+  }, null, 2);
+  return [
+    'あなたは、このガイドだけを渡された初見の作業者です。書いた経緯や会議の内容は知りません。',
+    '上から順に、頭の中で実際に実行してください。各ステップについて実行トレースを書き、',
+    '詰まった箇所を次のタイプで報告してください。',
+    '',
+    '- MISSING_INFO   : 実行に必要な情報が書かれていない',
+    '- AMBIGUOUS_CHECK: 完了確認が人によって判定の分かれる書き方になっている',
+    '- WRONG_ORDER    : この順では実行できない・前のステップの結果が足りない',
+    '- RISK_UNFLAGGED : 失敗すると取り返しがつかないのに注意書きがない',
+    '- JARGON         : 初見では意味の取れない用語・社内語',
+    '',
+    options.jsonOnly
+      ? '出力は次の形式の JSON オブジェクトのみとする。詰まりが無ければ passed を true、findings を空配列にする。\n' + findingSchema
+      : [
+        'トレースの形式:',
+        'Step n を実行中 → できたこと → 詰まり [タイプ]: 内容（どの記述か）',
+        '',
+        '最後に、結果を次の形式の ```json ブロックでまとめてください。',
+        findingSchema,
+        '詰まりが無ければ passed を true、findings を空配列にし、「完走」と書いてください。'
+      ].join('\n'),
+    '',
+    workGuideQualityBar_(),
+    '',
+    'ガイド:',
+    JSON.stringify(guide, null, 2)
   ].join('\n');
 }
 
@@ -1696,6 +1950,7 @@ function createWorkGuideDocument_(guide) {
   body.appendParagraph('作業手順').setHeading(DocumentApp.ParagraphHeading.HEADING1);
   guide.steps.slice().sort(function (a, b) { return a.order - b.order; }).forEach(function (step) {
     body.appendParagraph(step.order + '. ' + step.title).setHeading(DocumentApp.ParagraphHeading.HEADING2);
+    if (step.scopeNote) body.appendParagraph('このステップで変わらないこと: ' + step.scopeNote);
     body.appendParagraph(step.description);
     if (step.url) body.appendParagraph('URL: ' + step.url);
     if (step.inputs && step.inputs.length) {
@@ -1704,6 +1959,13 @@ function createWorkGuideDocument_(guide) {
     }
     if (step.type === 'script') body.appendParagraph('登録スクリプト: ' + step.scriptId);
     body.appendParagraph('完了条件: ' + step.completionCriteria).editAsText().setBold(true);
+    if (step.verification && step.verification.detail) body.appendParagraph('完了確認（' + (step.verification.method || 'visual') + '）: ' + step.verification.detail);
+    if (step.failureRecovery && step.failureRecovery.checks && step.failureRecovery.checks.length) {
+      body.appendParagraph('失敗した場合に確認する点:');
+      step.failureRecovery.checks.forEach(function (check) { body.appendListItem(check); });
+      if (step.failureRecovery.resumeFrom) body.appendParagraph('やり直す手順: ' + step.failureRecovery.resumeFrom);
+    }
+    if (step.evidenceRefs && step.evidenceRefs.length) body.appendParagraph('根拠台帳エントリ: ' + step.evidenceRefs.join(', '));
     if (step.sourceReferences && step.sourceReferences.length) body.appendParagraph('参照資料ID: ' + step.sourceReferences.join(', '));
   });
   document.saveAndClose();
@@ -2049,6 +2311,23 @@ function validateGuideSteps_(steps, snapshots, errors, options) {
     if (!nonEmptyString_(step.description)) errors.push(path + '.description は必須です。');
     if (step.url && !isAllowedUrl_(step.url)) errors.push(path + '.url は http または https URL です。');
     if (!nonEmptyString_(step.completionCriteria)) errors.push(path + '.completionCriteria は必須です。');
+    // GUIDE_DEEPDIVE_DESIGN §7.4 の拡張フィールド（任意。指定する場合は構造を検証する）
+    if (step.verification !== undefined) {
+      if (!isPlainObject_(step.verification) || ['visual', 'command', 'value_match'].indexOf(step.verification.method) < 0 || !nonEmptyString_(step.verification.detail)) {
+        errors.push(path + '.verification は method（visual | command | value_match）と detail が必要です。');
+      }
+    }
+    if (step.failureRecovery !== undefined) {
+      if (!isPlainObject_(step.failureRecovery) || !Array.isArray(step.failureRecovery.checks) || step.failureRecovery.checks.some(function (check) { return !nonEmptyString_(check); })) {
+        errors.push(path + '.failureRecovery は checks（文字列の配列）が必要です。');
+      } else if (step.failureRecovery.resumeFrom !== undefined && typeof step.failureRecovery.resumeFrom !== 'string') {
+        errors.push(path + '.failureRecovery.resumeFrom は文字列です。');
+      }
+    }
+    if (step.scopeNote !== undefined && typeof step.scopeNote !== 'string') errors.push(path + '.scopeNote は文字列です。');
+    if (step.evidenceRefs !== undefined && (!Array.isArray(step.evidenceRefs) || step.evidenceRefs.some(function (entryId) { return !nonEmptyString_(entryId); }))) {
+      errors.push(path + '.evidenceRefs は台帳 entryId の配列です。');
+    }
     if (!Array.isArray(step.sourceReferences)) errors.push(path + '.sourceReferences は配列です。');
     else step.sourceReferences.forEach(function (fileId) { if (!sourceIds[String(fileId)]) errors.push(path + '.sourceReferences に sourceSnapshots 未登録の fileId があります。'); });
     if (step.type === 'input') validateInputs_(step.inputs, path, errors);
@@ -2139,6 +2418,534 @@ function validateArrayField_(object, field, errors) {
 function throwValidationErrors_(errors, label) {
   const unique = errors.filter(function (error, index) { return errors.indexOf(error) === index; });
   if (unique.length) throw new AppError('VALIDATION_ERROR', label + ' に ' + unique.length + ' 件の問題があります。', { errors: unique });
+}
+
+// ===== KnowledgeLedgerService.gs =====
+/**
+ * Knowledge Ledger (知識台帳) — GUIDE_DEEPDIVE_DESIGN.md の心臓部。
+ * ガイドに書く具体値をすべて「出典つきの事実」として confirmed / assumed / unknown の
+ * 3状態で管理し、取材ループ（P2）の差分取り込み・準備度採点・台帳突合を機械化する。
+ * 台帳にない具体値はガイドに書けない（§4.4 の不変条件）。
+ */
+const LEDGER_SLOTS = Object.freeze([
+  { slot: 'url', label: '開く画面のURL', required: true },
+  { slot: 'ui_label', label: '画面表記どおりの操作名', required: true },
+  { slot: 'input_value', label: '入力・設定する値', required: true },
+  { slot: 'verification', label: '客観的な完了確認', required: true },
+  { slot: 'precondition', label: '必要な権限・事前状態', required: true },
+  { slot: 'failure_recovery', label: '失敗時の確認とやり直し', required: false },
+  { slot: 'caution', label: '不可逆・課金・秘密情報の注意', required: false },
+  { slot: 'decision_rule', label: '判断の選択肢と基準', required: false },
+  { slot: 'scope', label: 'このステップで変わらないこと', required: false }
+]);
+
+const LEDGER_CONFIDENCES = Object.freeze(['confirmed', 'assumed', 'unknown']);
+const LEDGER_EVIDENCE_TYPES = Object.freeze(['transcript', 'user_answer', 'artifact', 'ai_knowledge']);
+
+function ledgerSlotKeys_() {
+  return LEDGER_SLOTS.map(function (item) { return item.slot; });
+}
+
+function ledgerRequiredSlotKeys_() {
+  return LEDGER_SLOTS.filter(function (item) { return item.required; }).map(function (item) { return item.slot; });
+}
+
+function ledgerSlotLabel_(slot) {
+  const found = LEDGER_SLOTS.filter(function (item) { return item.slot === slot; })[0];
+  return found ? found.label : slot;
+}
+
+function nextLedgerEntryId_(entries) {
+  let max = 0;
+  (entries || []).forEach(function (entry) {
+    const match = String(entry.entryId || '').match(/^L-(\d+)$/);
+    if (match) max = Math.max(max, Number(match[1]));
+  });
+  return 'L-' + String(max + 1).padStart(3, '0');
+}
+
+// AI回答・貼り付けエントリを台帳スキーマ（§4.1）へ正規化する。claim と有効な slot /
+// confidence だけを必須とし、形式ゆれは既定値で吸収して取材ループを止めない。
+function normalizeLedgerEntry_(raw, skipped, position) {
+  if (!isPlainObject_(raw)) {
+    skipped.push('エントリ' + position + ': オブジェクトではないため無視しました。');
+    return null;
+  }
+  const claim = nonEmptyString_(raw.claim) ? raw.claim.trim() : '';
+  if (!claim) {
+    skipped.push('エントリ' + position + ': claim が無いため無視しました。');
+    return null;
+  }
+  const slot = String(raw.slot || '').trim();
+  if (ledgerSlotKeys_().indexOf(slot) < 0) {
+    skipped.push('エントリ' + position + '「' + claim.slice(0, 30) + '」: slot「' + slot + '」が不正なため無視しました。');
+    return null;
+  }
+  let confidence = LEDGER_CONFIDENCES.indexOf(String(raw.confidence || '').trim()) >= 0 ? String(raw.confidence).trim() : 'unknown';
+  const evidence = isPlainObject_(raw.evidence) ? raw.evidence : {};
+  const evidenceType = LEDGER_EVIDENCE_TYPES.indexOf(String(evidence.type || '').trim()) >= 0
+    ? String(evidence.type).trim()
+    : (confidence === 'assumed' ? 'ai_knowledge' : 'transcript');
+  const value = raw.value === undefined || raw.value === null ? '' : String(raw.value).trim();
+  if (confidence === 'confirmed' && !value) confidence = 'unknown';
+  if (confidence === 'confirmed' && evidenceType === 'ai_knowledge') confidence = 'assumed';
+  return {
+    entryId: nonEmptyString_(raw.entryId) ? String(raw.entryId).trim() : '',
+    stepRef: nonEmptyString_(raw.stepRef) ? String(raw.stepRef).trim() : '',
+    slot: slot,
+    claim: claim,
+    value: value,
+    evidence: {
+      type: evidenceType,
+      ref: nonEmptyString_(evidence.ref) ? String(evidence.ref).trim() : '',
+      quote: nonEmptyString_(evidence.quote) ? String(evidence.quote).trim() : ''
+    },
+    confidence: confidence,
+    note: nonEmptyString_(raw.note) ? String(raw.note).trim() : '',
+    deferred: raw.deferred === true,
+    updatedAt: nowIso_()
+  };
+}
+
+// 取材ラウンドの台帳差分を既存台帳へ取り込む。entryId 一致で更新、それ以外は追加。
+// confirmed へ更新されたエントリは降格状態を自動解除する。
+function applyLedgerDiff_(entries, diffEntries) {
+  const ledger = Array.isArray(entries) ? entries.slice() : [];
+  const skipped = [];
+  let added = 0;
+  let updated = 0;
+  (Array.isArray(diffEntries) ? diffEntries : []).forEach(function (raw, index) {
+    const normalized = normalizeLedgerEntry_(raw, skipped, index + 1);
+    if (!normalized) return;
+    const existing = normalized.entryId ? ledger.filter(function (entry) { return String(entry.entryId) === normalized.entryId; })[0] : null;
+    if (existing) {
+      existing.stepRef = normalized.stepRef || existing.stepRef;
+      existing.slot = normalized.slot;
+      existing.claim = normalized.claim;
+      if (normalized.value) existing.value = normalized.value;
+      if (normalized.evidence.ref || normalized.evidence.quote || normalized.confidence !== existing.confidence) existing.evidence = normalized.evidence;
+      existing.confidence = normalized.confidence;
+      if (normalized.note) existing.note = normalized.note;
+      if (existing.confidence === 'confirmed') existing.deferred = false;
+      else if (raw.deferred === true) existing.deferred = true;
+      existing.updatedAt = normalized.updatedAt;
+      updated += 1;
+    } else {
+      normalized.entryId = normalized.entryId && !ledger.some(function (entry) { return String(entry.entryId) === normalized.entryId; })
+        ? normalized.entryId
+        : nextLedgerEntryId_(ledger);
+      ledger.push(normalized);
+      added += 1;
+    }
+  });
+  return { entries: ledger, added: added, updated: updated, skipped: skipped };
+}
+
+/**
+ * 準備度採点（§6）。ステップ×スロットの充足を機械計算し、ヒートマップ表示用の
+ * 状態と、ゲート通過可否（confirmed または明示的な降格に全件が落ちているか）を返す。
+ */
+function computeLedgerReadiness_(skeleton, entries) {
+  const skeletonSteps = skeleton && Array.isArray(skeleton.steps) ? skeleton.steps : [];
+  const ledger = Array.isArray(entries) ? entries : [];
+  const byStepSlot = {};
+  ledger.forEach(function (entry) {
+    const stepKey = entry.stepRef || '';
+    if (!byStepSlot[stepKey]) byStepSlot[stepKey] = {};
+    if (!byStepSlot[stepKey][entry.slot]) byStepSlot[stepKey][entry.slot] = [];
+    byStepSlot[stepKey][entry.slot].push(entry);
+  });
+  const slotState = function (slotEntries) {
+    if (!slotEntries || !slotEntries.length) return 'missing';
+    if (slotEntries.some(function (entry) { return entry.confidence === 'confirmed'; })) return 'confirmed';
+    if (slotEntries.every(function (entry) { return entry.deferred === true; })) return 'deferred';
+    if (slotEntries.some(function (entry) { return entry.confidence === 'assumed' && entry.deferred !== true; })) return 'assumed';
+    return 'unknown';
+  };
+  const requiredBase = ledgerRequiredSlotKeys_();
+  const steps = [];
+  const holes = [];
+  let totalRequired = 0;
+  let totalConfirmed = 0;
+  let gatePassed = skeletonSteps.length > 0;
+  skeletonSteps.forEach(function (step) {
+    const stepKey = String(step.skeletonId || '');
+    const stepEntries = byStepSlot[stepKey] || {};
+    const slots = {};
+    let requiredCount = 0;
+    let confirmedCount = 0;
+    ledgerSlotKeys_().forEach(function (slot) {
+      const state = slotState(stepEntries[slot]);
+      slots[slot] = state;
+      const required = requiredBase.indexOf(slot) >= 0 || (stepEntries[slot] && stepEntries[slot].length > 0);
+      if (!required) return;
+      requiredCount += 1;
+      if (state === 'confirmed') confirmedCount += 1;
+      if (state !== 'confirmed' && state !== 'deferred') {
+        gatePassed = false;
+        holes.push({ skeletonId: stepKey, title: String(step.title || ''), slot: slot, state: state });
+      }
+    });
+    totalRequired += requiredCount;
+    totalConfirmed += confirmedCount;
+    steps.push({
+      skeletonId: stepKey, title: String(step.title || ''), slots: slots,
+      requiredCount: requiredCount, confirmedCount: confirmedCount,
+      score: requiredCount ? Math.round((confirmedCount / requiredCount) * 100) : 100
+    });
+  });
+  // ステップ列に紐付かない一般エントリも、未解消のまま黙って消えることはない（§4.4）。
+  const openEntries = ledger.filter(function (entry) { return entry.confidence !== 'confirmed' && entry.deferred !== true; });
+  const knownStepIds = {};
+  skeletonSteps.forEach(function (step) { knownStepIds[String(step.skeletonId || '')] = true; });
+  openEntries.forEach(function (entry) {
+    if (!knownStepIds[entry.stepRef || '']) {
+      gatePassed = false;
+      holes.push({ skeletonId: entry.stepRef || '全般', title: entry.claim.slice(0, 30), slot: entry.slot, state: entry.confidence });
+    }
+  });
+  return {
+    steps: steps,
+    overallScore: totalRequired ? Math.round((totalConfirmed / totalRequired) * 100) : 0,
+    gatePassed: gatePassed,
+    holes: holes,
+    openEntryIds: openEntries.map(function (entry) { return entry.entryId; }),
+    confirmedCount: ledger.filter(function (entry) { return entry.confidence === 'confirmed'; }).length,
+    deferredCount: ledger.filter(function (entry) { return entry.deferred === true; }).length,
+    entryCount: ledger.length
+  };
+}
+
+// AI がスロット自体を出し忘れた場合も、missing のまま操作不能にしない。
+// 明示的な降格や全自動経路では、不足スロットを unknown エントリとして実体化してから扱う。
+function materializeMissingLedgerEntries_(skeleton, entries, deferred, evidenceRef) {
+  const ledger = Array.isArray(entries) ? entries : [];
+  const steps = skeleton && Array.isArray(skeleton.steps) ? skeleton.steps : [];
+  steps.forEach(function (step) {
+    ledgerSlotKeys_().forEach(function (slot) {
+      const exists = ledger.some(function (entry) {
+        return String(entry.stepRef || '') === String(step.skeletonId || '') && String(entry.slot || '') === slot;
+      });
+      if (exists) return;
+      ledger.push({
+        entryId: nextLedgerEntryId_(ledger),
+        stepRef: String(step.skeletonId || ''),
+        slot: slot,
+        claim: String(step.skeletonId || '') + '「' + String(step.title || '') + '」の' + ledgerSlotLabel_(slot),
+        value: '',
+        evidence: { type: 'user_answer', ref: evidenceRef || '不足スロットを明示', quote: '' },
+        confidence: 'unknown',
+        note: 'AIの台帳初期化でスロットが欠落したため、アプリが追加',
+        deferred: deferred === true,
+        updatedAt: nowIso_()
+      });
+    });
+  });
+  return ledger;
+}
+
+/**
+ * 台帳突合（§7.3）。ガイド本文中の URL と evidenceRefs を抽出し、confirmed エントリに
+ * 存在しないものを「出典不明の値」として返す。AIが最後の最後で創作を混ぜる事故を機械で止める。
+ */
+function assessGuideAgainstLedger_(guide, entries) {
+  const errors = [];
+  const ledger = Array.isArray(entries) ? entries : [];
+  if (!isPlainObject_(guide) || !ledger.length) return errors;
+  const allowedUrls = [];
+  const deferredUrls = [];
+  const confirmedById = {};
+  const usedEvidenceRefs = {};
+  const allowedConcreteText = [];
+  const deferredConcreteText = [];
+  ledger.forEach(function (entry) {
+    if (entry.deferred === true) {
+      [entry.claim, entry.value, entry.note].forEach(function (text) {
+        extractUrls_(text).forEach(function (url) { deferredUrls.push(url); });
+        if (nonEmptyString_(text)) deferredConcreteText.push(normalizeConcreteText_(text));
+      });
+    }
+    if (entry.confidence !== 'confirmed') return;
+    confirmedById[String(entry.entryId)] = entry;
+    [entry.value, entry.note, entry.evidence && entry.evidence.quote].forEach(function (text) {
+      extractUrls_(text).forEach(function (url) { allowedUrls.push(url); });
+      if (nonEmptyString_(text)) allowedConcreteText.push(normalizeConcreteText_(text));
+    });
+  });
+  const urlAllowed = function (url) {
+    return allowedUrls.some(function (allowed) {
+      return url === allowed || url.indexOf(allowed + '/') === 0 || url.indexOf(allowed + '?') === 0 || url.indexOf(allowed + '#') === 0;
+    });
+  };
+  const deferredUrlAllowed = function (url) {
+    return deferredUrls.some(function (allowed) {
+      return url === allowed || url.indexOf(allowed + '/') === 0 || url.indexOf(allowed + '?') === 0 || url.indexOf(allowed + '#') === 0;
+    });
+  };
+  const concreteGrounded = function (value, allowedTexts) {
+    const normalized = normalizeConcreteText_(value);
+    return allowedTexts.some(function (allowed) {
+      return allowed.indexOf(normalized) >= 0 || normalized.indexOf(allowed) >= 0;
+    });
+  };
+  (Array.isArray(guide.steps) ? guide.steps : []).forEach(function (step) {
+    if (!isPlainObject_(step)) return;
+    const label = '手順' + (step.order || '?') + '「' + String(step.title || '').slice(0, 30) + '」';
+    if (!nonEmptyString_(step.scopeNote)) errors.push(label + ': scopeNote（このステップで変わらないこと）がありません。');
+    if (!isPlainObject_(step.verification) || !nonEmptyString_(step.verification.detail)) errors.push(label + ': 構造化された verification がありません。');
+    if (!isPlainObject_(step.failureRecovery) || !Array.isArray(step.failureRecovery.checks) || !step.failureRecovery.checks.length) {
+      errors.push(label + ': 構造化された failureRecovery（失敗時の確認点）がありません。');
+    }
+    const evidenceRefs = Array.isArray(step.evidenceRefs) ? step.evidenceRefs : [];
+    if (!evidenceRefs.length) errors.push(label + ': evidenceRefs が空です。使用した confirmed 台帳エントリを指定してください。');
+    const stepUrls = extractUrls_(step.url)
+      .concat(extractUrls_(step.description))
+      .concat(extractUrls_(step.completionCriteria))
+      .concat(extractUrls_(step.verification && step.verification.detail))
+      .concat(extractUrls_(step.failureRecovery && step.failureRecovery.checks && step.failureRecovery.checks.join('\n')));
+    stepUrls.forEach(function (url) {
+      if (!urlAllowed(url)) errors.push(label + ': URL「' + url + '」は台帳の confirmed エントリに存在しません（出典不明の値）。台帳へ確認済みで追加するか、ガイドから削除してください。');
+    });
+    evidenceRefs.forEach(function (entryId) {
+      usedEvidenceRefs[String(entryId)] = true;
+      const entry = confirmedById[String(entryId)];
+      if (!entry) errors.push(label + ': evidenceRefs の「' + entryId + '」は confirmed の台帳エントリではありません。');
+    });
+    const concreteText = [
+      step.description, step.completionCriteria, step.verification && step.verification.detail,
+      step.failureRecovery && step.failureRecovery.checks && step.failureRecovery.checks.join('\n')
+    ].join('\n');
+    extractMajorConcreteValues_(concreteText).forEach(function (value) {
+      if (!concreteGrounded(value, allowedConcreteText)) errors.push(label + ': 具体値「' + value + '」は台帳の confirmed エントリに見つかりません。');
+    });
+  });
+  ['assumptions', 'warnings'].forEach(function (field) {
+    const text = (Array.isArray(guide[field]) ? guide[field] : []).join('\n');
+    extractUrls_(text).forEach(function (url) {
+      if (!urlAllowed(url)) errors.push(field + ' のURL「' + url + '」は台帳の confirmed エントリに存在しません。');
+    });
+    extractMajorConcreteValues_(text).forEach(function (value) {
+      if (!concreteGrounded(value, allowedConcreteText)) errors.push(field + ' の具体値「' + value + '」は台帳の confirmed エントリに見つかりません。');
+    });
+  });
+  const prerequisitesText = (Array.isArray(guide.prerequisites) ? guide.prerequisites : []).join('\n');
+  extractUrls_(prerequisitesText).forEach(function (url) {
+    if (!urlAllowed(url) && !deferredUrlAllowed(url)) errors.push('prerequisites のURL「' + url + '」は confirmed または明示的に降格した台帳エントリに存在しません。');
+  });
+  extractMajorConcreteValues_(prerequisitesText).forEach(function (value) {
+    if (!concreteGrounded(value, allowedConcreteText) && !concreteGrounded(value, deferredConcreteText)) {
+      errors.push('prerequisites の具体値「' + value + '」は confirmed または明示的に降格した台帳エントリに見つかりません。');
+    }
+  });
+  ledger.filter(function (entry) { return entry.deferred === true; }).forEach(function (entry) {
+    if (prerequisitesText.indexOf(String(entry.claim || '')) < 0) {
+      errors.push('作業前に確認へ降格した「' + entry.claim + '」が prerequisites に明示されていません。');
+    } else if (nonEmptyString_(entry.value) && prerequisitesText.indexOf(String(entry.value)) < 0) {
+      errors.push('降格した「' + entry.claim + '」の現時点の見立て「' + entry.value + '」が prerequisites に明示されていません。');
+    }
+  });
+  ledger.filter(function (entry) {
+    return entry.confidence === 'confirmed' && nonEmptyString_(entry.stepRef);
+  }).forEach(function (entry) {
+    if (!usedEvidenceRefs[String(entry.entryId)]) {
+      errors.push('confirmed 台帳エントリ「' + entry.entryId + ' / ' + entry.claim + '」がどの手順の evidenceRefs にも使われていません。');
+    }
+  });
+  return errors.filter(function (error, index) { return errors.indexOf(error) === index; });
+}
+
+function extractUrls_(text) {
+  const matches = String(text || '').match(/https?:\/\/[^\s"'<>）)、。」\]]+/g) || [];
+  return matches.map(function (url) { return url.replace(/[\/.,]+$/, ''); });
+}
+
+function extractMajorConcreteValues_(text) {
+  const values = [];
+  const source = String(text || '');
+  [
+    /「([^」\n]{2,100})」/g,
+    /`([^`\n]{2,160})`/g
+  ].forEach(function (pattern) {
+    let match;
+    while ((match = pattern.exec(source)) !== null) {
+      const value = String(match[1] || '').trim();
+      if (value && !/^作業前に確認/.test(value) && values.indexOf(value) < 0) values.push(value);
+    }
+  });
+  return values;
+}
+
+function normalizeConcreteText_(text) {
+  return String(text || '').replace(/\s+/g, '').toLowerCase();
+}
+
+function parseFencedJsonBlocks_(rawText) {
+  const blocks = [];
+  const pattern = /```(?:json)?\s*([\s\S]*?)```/gi;
+  let match;
+  while ((match = pattern.exec(String(rawText || ''))) !== null) {
+    try { blocks.push(JSON.parse(match[1].trim())); } catch (error) { /* JSON以外のコードブロックは無視 */ }
+  }
+  return blocks;
+}
+
+// P1（骨格抽出＋台帳初期化）の回答から skeleton と ledger を取り出す。
+function normalizeSkeletonLedgerResult_(found) {
+  assertApp_(isPlainObject_(found) && isPlainObject_(found.skeleton) && Array.isArray(found.ledger), 'SKELETON_PARSE_ERROR', '骨格と台帳は {"skeleton": …, "ledger": […]} の形式で必要です。');
+  const skeletonRaw = found.skeleton;
+  const steps = (Array.isArray(skeletonRaw.steps) ? skeletonRaw.steps : []).map(function (step, index) {
+    return {
+      skeletonId: nonEmptyString_(step && step.skeletonId) ? String(step.skeletonId).trim() : 'SK-' + (index + 1),
+      title: nonEmptyString_(step && step.title) ? String(step.title).trim() : '手順' + (index + 1)
+    };
+  });
+  assertApp_(steps.length, 'SKELETON_PARSE_ERROR', '骨格のステップ列（skeleton.steps）が空です。');
+  const skeleton = {
+    purpose: nonEmptyString_(skeletonRaw.purpose) ? String(skeletonRaw.purpose).trim() : '',
+    completion: nonEmptyString_(skeletonRaw.completion) ? String(skeletonRaw.completion).trim() : '',
+    steps: steps,
+    outOfScope: Array.isArray(skeletonRaw.outOfScope) ? skeletonRaw.outOfScope.filter(nonEmptyString_) : []
+  };
+  const applied = applyLedgerDiff_([], found.ledger);
+  return { skeleton: skeleton, entries: applied.entries, skipped: applied.skipped };
+}
+
+function parseSkeletonLedgerReply_(rawText) {
+  const blocks = parseFencedJsonBlocks_(rawText);
+  const found = blocks.filter(function (block) {
+    return isPlainObject_(block) && isPlainObject_(block.skeleton) && Array.isArray(block.ledger);
+  })[0];
+  assertApp_(found, 'SKELETON_PARSE_ERROR', 'AI回答から骨格と台帳のJSONブロックを読み取れません。プロンプトの指定どおり {"skeleton": …, "ledger": […]} を含む ```json ブロックがあるか確認してください。');
+  return normalizeSkeletonLedgerResult_(found);
+}
+
+// P2（取材ラウンド）の回答から台帳差分と「## 6. 次の質問」を取り出す。
+function parseInterviewReply_(rawText) {
+  const text = String(rawText || '');
+  const blocks = parseFencedJsonBlocks_(text);
+  let diffEntries = [];
+  blocks.some(function (block) {
+    if (Array.isArray(block)) { diffEntries = block; return true; }
+    if (isPlainObject_(block) && Array.isArray(block.entries)) { diffEntries = block.entries; return true; }
+    if (isPlainObject_(block) && Array.isArray(block.ledger)) { diffEntries = block.ledger; return true; }
+    return false;
+  });
+  return { diffEntries: diffEntries, questions: parseInterviewQuestions_(text), sections: parseInterviewSections_(text) };
+}
+
+function parseInterviewSections_(text) {
+  const sections = {};
+  const titles = { '1': 'echo', '2': 'ledger', '3': 'contradictions', '4': 'assumedAudit', '5': 'readiness', '6': 'questions' };
+  const pattern = /^##\s*([1-6])[^\n]*$/gm;
+  const found = [];
+  let match;
+  while ((match = pattern.exec(text)) !== null) found.push({ number: match[1], start: match.index, bodyStart: match.index + match[0].length });
+  found.forEach(function (section, index) {
+    const end = index + 1 < found.length ? found[index + 1].start : text.length;
+    sections[titles[section.number]] = text.slice(section.bodyStart, end).trim();
+  });
+  return sections;
+}
+
+function parseInterviewQuestions_(text) {
+  const sections = parseInterviewSections_(text);
+  const body = sections.questions || '';
+  if (!body.trim()) return [];
+  const chunks = body.split(/\n(?=\s*(?:[>＞]?\s*)?(?:Q\s*\d|質問\s*\d|\d+\s*[\.．)]))/);
+  const questions = [];
+  chunks.forEach(function (chunk) {
+    const trimmed = chunk.trim();
+    if (!trimmed || !/^(?:[>＞]?\s*)?(?:Q\s*\d|質問\s*\d|\d+\s*[\.．)])/.test(trimmed)) return;
+    const tag = trimmed.match(/\[\s*対象\s*[:：]\s*([^\/\]]+?)\s*\/\s*スロット\s*[:：]\s*([a-z_]+)\s*\]/);
+    questions.push({
+      questionId: 'Q' + (questions.length + 1),
+      text: trimmed,
+      stepRef: tag ? tag[1].trim() : '',
+      slot: tag && ledgerSlotKeys_().indexOf(tag[2].trim()) >= 0 ? tag[2].trim() : ''
+    });
+  });
+  const limit = APP_CONFIG.ledgerInterview && APP_CONFIG.ledgerInterview.maxQuestionsPerRound
+    ? Number(APP_CONFIG.ledgerInterview.maxQuestionsPerRound)
+    : 5;
+  return questions.slice(0, limit);
+}
+
+// P4（机上実行レビュー）の回答を解析する。手動貼り付け（トレース文＋jsonブロック）と
+// API自動（JSONオブジェクトのみ）の両方を受け付ける。
+function parseDeskReviewReply_(rawText) {
+  const text = String(rawText || '');
+  let parsed = null;
+  try { parsed = JSON.parse(text.trim()); } catch (error) { /* 貼り付けはブロック探索へ */ }
+  const blocks = parsed ? [parsed] : parseFencedJsonBlocks_(text);
+  let findings = [];
+  let trace = [];
+  let passedFlag = null;
+  blocks.some(function (block) {
+    if (Array.isArray(block)) { findings = block; return true; }
+    if (isPlainObject_(block) && (Array.isArray(block.findings) || typeof block.passed === 'boolean')) {
+      findings = Array.isArray(block.findings) ? block.findings : [];
+      trace = Array.isArray(block.trace) ? block.trace.filter(nonEmptyString_) : [];
+      if (typeof block.passed === 'boolean') passedFlag = block.passed;
+      return true;
+    }
+    return false;
+  });
+  const normalized = normalizeDeskReviewFindings_(findings);
+  const passed = normalized.length === 0 && (passedFlag === true || /完走/.test(text));
+  return { passed: passed, findings: normalized, trace: trace };
+}
+
+function normalizeDeskReviewFindings_(findings) {
+  const typeToSlot = {
+    MISSING_INFO: 'input_value', AMBIGUOUS_CHECK: 'verification', WRONG_ORDER: 'decision_rule',
+    RISK_UNFLAGGED: 'caution', JARGON: 'ui_label'
+  };
+  return (Array.isArray(findings) ? findings : []).map(function (finding) {
+    if (!isPlainObject_(finding) || !nonEmptyString_(finding.claim)) return null;
+    const rawType = String(finding.type || '').trim().toUpperCase();
+    const type = Object.prototype.hasOwnProperty.call(typeToSlot, rawType) ? rawType : 'MISSING_INFO';
+    const slot = ledgerSlotKeys_().indexOf(String(finding.slot || '').trim()) >= 0
+      ? String(finding.slot).trim()
+      : (typeToSlot[type] || 'precondition');
+    return {
+      stepRef: nonEmptyString_(finding.stepRef) ? String(finding.stepRef).trim() : '',
+      slot: slot,
+      type: type,
+      claim: String(finding.claim).trim()
+    };
+  }).filter(function (finding) { return finding !== null; });
+}
+
+// API自動経路の机上実行レビュー結果の検証（runAiJsonTask_ の validator として使う）。
+function validateDeskReviewResult_(result) {
+  const errors = [];
+  if (!isPlainObject_(result)) errors.push('ルートは JSON オブジェクトです。');
+  else {
+    if (typeof result.passed !== 'boolean') errors.push('passed は真偽値です。');
+    if (result.trace !== undefined && (!Array.isArray(result.trace) || result.trace.some(function (line) { return !nonEmptyString_(line); }))) errors.push('trace は文字列の配列です。');
+    if (!Array.isArray(result.findings)) errors.push('findings は配列です（詰まりが無ければ空配列）。');
+    if (result.passed === true && Array.isArray(result.findings) && result.findings.length) errors.push('passed=true の場合、findings は空配列です。');
+    if (result.passed === false && Array.isArray(result.findings) && !result.findings.length) errors.push('passed=false の場合、findings に詰まりを1件以上入れてください。');
+  }
+  throwValidationErrors_(errors, '机上実行レビュー JSON');
+  result.findings = normalizeDeskReviewFindings_(result.findings);
+  if (result.passed === false && !result.findings.length) {
+    throw new AppError('VALIDATION_ERROR', '机上実行レビュー JSON に有効な finding がありません。', { errors: ['findings[].claim は必須です。'] });
+  }
+  result.trace = Array.isArray(result.trace) ? result.trace.filter(nonEmptyString_) : [];
+  return result;
+}
+
+// 全自動経路: 人へ質問できないため、机上実行レビューの詰まりは
+// 「作業前に確認」へ自動降格して前提条件に明示する（§12）。
+function applyDeskReviewFindingsToGuide_(guide, findings) {
+  const prerequisites = Array.isArray(guide.prerequisites) ? guide.prerequisites : [];
+  (findings || []).forEach(function (finding) {
+    const line = '作業前に確認: ' + finding.claim + (finding.stepRef ? '（' + finding.stepRef + '）' : '');
+    if (prerequisites.indexOf(line) < 0) prerequisites.push(line);
+  });
+  guide.prerequisites = prerequisites;
+  return guide;
 }
 
 // ===== Main.gs =====
@@ -2930,6 +3737,15 @@ function reopenTranscript(fileId) {
 }
 
 // ===== WorkGuideBuildService.gs =====
+/**
+ * 手動ガイド作成フロー（GUIDE_DEEPDIVE_DESIGN.md 反映版）。
+ * 書き直しループではなく、知識台帳を介した取材ループを中心に据える。
+ * STEP 1 候補確認 / 2 既知の前提 / 3 参照資料 / 4 骨格・台帳初期化(P1) /
+ * 5 取材ループ(P2×N) / 6 準備度ゲート→ガイド生成(P3) / 7 JSON取込（台帳突合） /
+ * 8 机上実行レビュー(P4)・再調整 / 9 編集 / 10 保存
+ */
+const BUILD_STEP_COUNT = 10;
+
 function startWorkGuideBuild(actionId, creationMode) {
   return withClientError_(function () {
     const action = requireAction_(actionId);
@@ -2952,10 +3768,18 @@ function startWorkGuideBuild(actionId, creationMode) {
           },
           meeting: { meetingId: meeting.meetingId, title: meeting.title, summary: analysis ? analysis.summary : '' },
           knownPrerequisites: [],
+          // 会議解析の前提質問は一問一答ではなく、台帳初期化（P1）の unknown 候補として使う。
           prerequisiteQuestions: parseJsonCell_(action.prerequisiteQuestionsJson, defaultPrerequisiteQuestions_()),
-          prerequisiteAnswers: {},
           selectedSources: [],
-          approvedGuidePlan: '',
+          skeleton: null,
+          ledger: [],
+          interviewRounds: [],
+          pendingQuestions: [],
+          questionAttempts: {},
+          interviewSeeds: [],
+          ledgerAudit: [],
+          gatePassed: false,
+          deskReview: null,
           importedWorkGuide: null,
           creationMode: requestedMode
         };
@@ -2998,12 +3822,64 @@ function startWorkGuideRevision(workGuideId) {
     const session = requireBuildSession_(started.session.buildSessionId);
     const data = parseJsonCell_(session.dataJson, {});
     const loaded = getWorkGuideOrThrow_(workGuideId, Number(record.currentVersion));
-    data.importedWorkGuide = loaded.guide;
+    data.importedWorkGuide = null;
+    data.priorWorkGuide = loaded.guide;
     data.revisionWorkGuideId = String(record.workGuideId);
     data.selectedSources = loaded.guide.sourceSnapshots || [];
-    updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: 9, status: 'in_progress', dataJson: data, updatedAt: nowIso_() });
-    return { success: true, session: hydrateBuildSession_(Object.assign(session, { currentStep: 9, dataJson: data })) };
+    // 実行フィードバック（§9.1）: ガイド外参照の記録を v2 取材ループの初期質問リストにする。
+    data.interviewSeeds = collectExecutionExternalReferences_(record.workGuideId);
+    // 同じ仕組みで作成した前版の台帳が残っていれば再利用し、実行時に増えた不足だけを取材する。
+    const previousSessions = findRows_('WorkGuideBuildSessions', function (row) {
+      return String(row.actionId) === String(record.actionId) && String(row.buildSessionId) !== String(session.buildSessionId) && String(row.status) === 'completed';
+    }).sort(function (a, b) { return String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')); });
+    if (previousSessions.length) {
+      const previousData = parseJsonCell_(previousSessions[0].dataJson, {});
+      if (isPlainObject_(previousData.skeleton) && Array.isArray(previousData.ledger)) {
+        data.skeleton = JSON.parse(JSON.stringify(previousData.skeleton));
+        data.ledger = JSON.parse(JSON.stringify(previousData.ledger));
+        data.gatePassed = false;
+        pushLedgerAudit_(data, 'revision_reuse', '前版の知識台帳' + data.ledger.length + '件を引き継ぎ');
+      }
+    }
+    if (isPlainObject_(data.skeleton) && data.interviewSeeds.length) {
+      const feedbackEntries = data.interviewSeeds.filter(function (seed) {
+        const claim = '前回実行でガイド外参照: ' + String(seed.note || '');
+        return !(data.ledger || []).some(function (entry) { return String(entry.claim) === claim; });
+      }).map(function (seed) {
+        return {
+          stepRef: resolveDeskReviewStepRef_(data, seed.stepId || ''),
+          slot: 'precondition',
+          claim: '前回実行でガイド外参照: ' + String(seed.note || ''),
+          value: '',
+          confidence: 'unknown',
+          evidence: { type: 'user_answer', ref: '実行 ' + String(seed.executionId || ''), quote: String(seed.note || '') }
+        };
+      });
+      if (feedbackEntries.length) {
+        data.ledger = applyLedgerDiff_(data.ledger || [], feedbackEntries).entries;
+        pushLedgerAudit_(data, 'execution_feedback', '前回実行のガイド外参照' + feedbackEntries.length + '件を unknown として追加');
+      }
+    }
+    const nextStep = isPlainObject_(data.skeleton) ? 5 : 4;
+    updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: nextStep, status: 'in_progress', dataJson: data, updatedAt: nowIso_() });
+    return { success: true, session: hydrateBuildSession_(Object.assign(session, { currentStep: nextStep, dataJson: data })) };
   });
+}
+
+function collectExecutionExternalReferences_(workGuideId) {
+  const seeds = [];
+  findRows_('WorkGuideExecutions', function (row) { return String(row.workGuideId) === String(workGuideId); }).forEach(function (row) {
+    const data = parseJsonCell_(row.executionDataJson, {});
+    (Array.isArray(data.externalReferences) ? data.externalReferences : []).forEach(function (reference) {
+      seeds.push({
+        executionId: String(row.executionId || ''),
+        stepId: String(reference.stepId || ''),
+        note: String(reference.note || ''),
+        at: String(reference.at || '')
+      });
+    });
+  });
+  return seeds;
 }
 
 function saveWorkGuideBuildProgress(buildSessionId, step, patch) {
@@ -3011,82 +3887,283 @@ function saveWorkGuideBuildProgress(buildSessionId, step, patch) {
     const session = requireOpenBuildSession_(buildSessionId);
     requirePassedQuizForMeeting_(session.meetingId);
     const stepNumber = Number(step);
-    assertApp_(Number.isInteger(stepNumber) && stepNumber >= 1 && stepNumber <= 11, 'VALIDATION_ERROR', '作成ステップは1〜11です。');
+    assertApp_(Number.isInteger(stepNumber) && stepNumber >= 1 && stepNumber <= BUILD_STEP_COUNT, 'VALIDATION_ERROR', '作成ステップは1〜' + BUILD_STEP_COUNT + 'です。');
     const data = parseJsonCell_(session.dataJson, {});
-    const allowedKeys = ['knownPrerequisites', 'prerequisiteAnswers', 'selectedSources', 'importedWorkGuide'];
+    const allowedKeys = ['knownPrerequisites', 'selectedSources', 'importedWorkGuide'];
     Object.keys(patch || {}).forEach(function (key) {
       if (allowedKeys.indexOf(key) >= 0) data[key] = patch[key];
     });
-    updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: stepNumber, status: 'in_progress', dataJson: data, updatedAt: nowIso_() });
-    return { success: true, session: Object.assign(hydrateBuildSession_(session), { currentStep: stepNumber, data: data }) };
-  });
-}
-
-function prepareWorkGuidePlanPrompt(buildSessionId, fileIds, knownPrerequisites, prerequisiteAnswers) {
-  return withClientError_(function () {
-    const session = requireOpenBuildSession_(buildSessionId);
-    requirePassedQuizForMeeting_(session.meetingId);
-    const data = parseJsonCell_(session.dataJson, {});
-    const prepared = prepareWorkGuideContext_(data, fileIds, knownPrerequisites, prerequisiteAnswers);
-    data.lastAiPlanPrompt = buildWorkGuidePlanPrompt_(prepared.context);
-    data.approvedGuidePlan = '';
-    data.lastAiPrompt = '';
-    data.lastAiPromptPhase = '';
-    updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: 7, dataJson: data, updatedAt: nowIso_() });
-    return { success: true, prompt: data.lastAiPlanPrompt, selectedSources: data.selectedSources };
-  });
-}
-
-function prepareWorkGuidePlanRefinePrompt(buildSessionId, currentPlan, feedback) {
-  return withClientError_(function () {
-    const session = requireOpenBuildSession_(buildSessionId);
-    requirePassedQuizForMeeting_(session.meetingId);
-    const data = parseJsonCell_(session.dataJson, {});
-    assertApp_(nonEmptyString_(data.lastAiPlanPrompt), 'GUIDE_PLAN_REQUIRED', '先に設計案プロンプトを作成し、生成AIの設計案を取得してください。');
-    assertApp_(nonEmptyString_(currentPlan), 'VALIDATION_ERROR', '生成AIの設計案を貼り付けてから深掘りしてください。');
-    const normalizedPlan = currentPlan.trim();
-    assertApp_(normalizedPlan.length <= 50000, 'VALIDATION_ERROR', '設計案は50,000文字以内にしてください。');
-    const note = nonEmptyString_(feedback) ? feedback.trim() : '';
-    assertApp_(note.length <= 10000, 'VALIDATION_ERROR', '回答・指摘は10,000文字以内にしてください。');
-    // 深掘りの各往復も監査履歴に残す。直前のプロンプトと、それに対するAIの設計案を1往復として記録する。
-    recordManualAiInteraction_({ meetingId: session.meetingId, actionId: session.actionId, buildSessionId: session.buildSessionId, phase: 'work_guide_plan_refinement' }, data.lastAiPlanPrompt, normalizedPlan, { valid: true, errors: [] });
-    const prepared = prepareWorkGuideContext_(data, (data.selectedSources || []).map(function (source) { return source.fileId; }), data.knownPrerequisites, data.prerequisiteAnswers);
-    data.planRefinements = (Array.isArray(data.planRefinements) ? data.planRefinements : []).concat([{ feedback: note, createdAt: nowIso_() }]);
-    data.lastAiPlanPrompt = buildWorkGuidePlanRefinePrompt_(prepared.context, normalizedPlan, note);
-    data.approvedGuidePlan = '';
-    data.lastAiPrompt = '';
-    data.lastAiPromptPhase = '';
-    updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: 7, dataJson: data, updatedAt: nowIso_() });
-    return { success: true, prompt: data.lastAiPlanPrompt, refinementCount: data.planRefinements.length };
-  });
-}
-
-function prepareWorkGuidePrompt(buildSessionId, fileIds, knownPrerequisites, prerequisiteAnswers, approvedPlan, confirmed) {
-  return withClientError_(function () {
-    const session = requireOpenBuildSession_(buildSessionId);
-    requirePassedQuizForMeeting_(session.meetingId);
-    assertApp_(confirmed === true, 'REVIEW_CONFIRMATION_REQUIRED', 'ガイドの目的と具体的な作業内容を確認してください。');
-    assertApp_(nonEmptyString_(approvedPlan), 'VALIDATION_ERROR', '生成AIの作業ガイド設計案を貼り付け、必要なら修正してください。');
-    const normalizedPlan = approvedPlan.trim();
-    assertApp_(normalizedPlan.length <= 50000, 'VALIDATION_ERROR', '作業ガイド設計案は50,000文字以内にしてください。');
-    const data = parseJsonCell_(session.dataJson, {});
-    const prepared = prepareWorkGuideContext_(data, fileIds, knownPrerequisites, prerequisiteAnswers);
-    assertApp_(nonEmptyString_(data.lastAiPlanPrompt), 'GUIDE_PLAN_REQUIRED', '先に人が読むための設計案プロンプトを作成してください。');
-    if (data.approvedGuidePlan !== normalizedPlan) {
-      recordManualAiInteraction_({ meetingId: session.meetingId, actionId: session.actionId, buildSessionId: session.buildSessionId, phase: 'work_guide_alignment' }, data.lastAiPlanPrompt, normalizedPlan, { valid: true, errors: [] });
+    let effectiveStep = stepNumber;
+    let deskReviewInvalidated = false;
+    if (isPlainObject_(patch && patch.importedWorkGuide)) {
+      validateWorkGuide_(patch.importedWorkGuide);
+      if (isPlainObject_(data.skeleton) && Array.isArray(data.ledger)) {
+        const ledgerErrors = assessGuideAgainstLedger_(patch.importedWorkGuide, data.ledger);
+        assertApp_(!ledgerErrors.length, 'LEDGER_MISMATCH', '編集内容が知識台帳と一致しません。', { errors: ledgerErrors });
+      }
+      if (!data.deskReview || data.deskReview.guideFingerprint !== fingerprint_(patch.importedWorkGuide)) {
+        data.deskReview = null;
+        data.lastDeskReviewPrompt = '';
+        effectiveStep = 8;
+        deskReviewInvalidated = true;
+      }
     }
-    data.approvedGuidePlan = normalizedPlan;
-    data.lastAiPrompt = buildWorkGuidePrompt_(prepared.context, normalizedPlan);
-    data.lastAiPromptPhase = 'work_guide_generation';
-    updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: 7, dataJson: data, updatedAt: nowIso_() });
-    return { success: true, prompt: data.lastAiPrompt, selectedSources: data.selectedSources };
+    updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: effectiveStep, status: 'in_progress', dataJson: data, updatedAt: nowIso_() });
+    return { success: true, deskReviewInvalidated: deskReviewInvalidated, session: Object.assign(hydrateBuildSession_(session), { currentStep: effectiveStep, data: data }) };
   });
 }
 
-function prepareWorkGuideContext_(data, fileIds, knownPrerequisites, prerequisiteAnswers) {
+// ---- STEP 4: 骨格抽出＋台帳初期化（P1） ----
+
+function prepareGuideSkeletonPrompt(buildSessionId, fileIds, knownPrerequisites) {
+  return withClientError_(function () {
+    const session = requireOpenBuildSession_(buildSessionId);
+    requirePassedQuizForMeeting_(session.meetingId);
+    const data = parseJsonCell_(session.dataJson, {});
+    const meeting = requireMeeting_(session.meetingId);
+    // 情報源のベースは会議の文字起こし（設計の固定前提）。選択資料に必ず文字起こしを含める。
+    const ids = [String(meeting.transcriptFileId)].concat(Array.isArray(fileIds) ? fileIds : []).filter(function (fileId, index, list) {
+      return nonEmptyString_(fileId) && list.indexOf(fileId) === index;
+    });
+    const prepared = prepareWorkGuideContext_(data, ids, knownPrerequisites);
+    data.lastSkeletonPrompt = buildGuideSkeletonPrompt_({
+      action: data.action,
+      meeting: data.meeting,
+      knownPrerequisites: data.knownPrerequisites,
+      prerequisiteQuestions: data.prerequisiteQuestions || [],
+      interviewSeeds: data.interviewSeeds || [],
+      priorWorkGuide: data.priorWorkGuide || null,
+      selectedSources: prepared.context.selectedSources
+    });
+    updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: 4, dataJson: data, updatedAt: nowIso_() });
+    return { success: true, prompt: data.lastSkeletonPrompt, selectedSources: data.selectedSources };
+  });
+}
+
+function importGuideSkeleton(buildSessionId, rawText) {
+  return withClientError_(function () {
+    const session = requireOpenBuildSession_(buildSessionId);
+    requirePassedQuizForMeeting_(session.meetingId);
+    const data = parseJsonCell_(session.dataJson, {});
+    assertApp_(nonEmptyString_(data.lastSkeletonPrompt), 'SKELETON_PROMPT_REQUIRED', '先に骨格・台帳初期化プロンプトを作成し、生成AIの回答を取得してください。');
+    assertApp_(nonEmptyString_(rawText), 'VALIDATION_ERROR', '生成AIの回答を貼り付けてください。');
+    const parsed = parseSkeletonLedgerReply_(rawText);
+    recordManualAiInteraction_({ meetingId: session.meetingId, actionId: session.actionId, buildSessionId: session.buildSessionId, phase: 'ledger_init' }, data.lastSkeletonPrompt, rawText, { valid: true, errors: [] });
+    data.skeleton = parsed.skeleton;
+    data.ledger = parsed.entries;
+    data.interviewRounds = [];
+    data.pendingQuestions = [];
+    data.gatePassed = false;
+    data.deskReview = null;
+    pushLedgerAudit_(data, 'init', '台帳初期化: ' + parsed.entries.length + '件のエントリを登録' + (parsed.skipped.length ? '（' + parsed.skipped.length + '件を形式不備で無視）' : ''));
+    const readiness = computeLedgerReadiness_(data.skeleton, data.ledger);
+    updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: 5, dataJson: data, updatedAt: nowIso_() });
+    return { success: true, skeleton: data.skeleton, ledger: data.ledger, readiness: readiness, skipped: parsed.skipped };
+  });
+}
+
+// ---- STEP 5: 取材ループ（P2） ----
+
+function prepareLedgerInterviewPrompt(buildSessionId, answersText, deferrals) {
+  return withClientError_(function () {
+    const session = requireOpenBuildSession_(buildSessionId);
+    requirePassedQuizForMeeting_(session.meetingId);
+    const data = parseJsonCell_(session.dataJson, {});
+    assertApp_(isPlainObject_(data.skeleton), 'SKELETON_REQUIRED', '先に STEP 4 で骨格と台帳を初期化してください。');
+    const answers = nonEmptyString_(answersText) ? answersText.trim() : '';
+    assertApp_(answers.length <= APP_CONFIG.ledgerInterview.maxAnswerCharacters, 'VALIDATION_ERROR', '回答は' + APP_CONFIG.ledgerInterview.maxAnswerCharacters + '文字以内にしてください。');
+    // 「作業前に確認でよい」と答えたスロットは、この時点で正式に降格し以後質問させない（§5.3）。
+    (Array.isArray(deferrals) ? deferrals : []).forEach(function (deferral) {
+      if (!isPlainObject_(deferral)) return;
+      deferLedgerSlot_(data, String(deferral.stepRef || ''), String(deferral.slot || ''), deferral.label || '');
+    });
+    if (Array.isArray(deferrals) && deferrals.length) {
+      recordLedgerHumanAction_(session, '質問回答で作業前確認へ降格', deferrals);
+    }
+    data.lastInterviewPrompt = buildLedgerInterviewPrompt_({
+      skeleton: data.skeleton,
+      ledger: data.ledger || [],
+      previousQuestions: data.pendingQuestions || [],
+      questionAttempts: data.questionAttempts || {},
+      interviewRounds: data.interviewRounds || [],
+      interviewSeeds: data.interviewSeeds || []
+    }, answers);
+    data.lastInterviewAnswers = answers;
+    updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: 5, dataJson: data, updatedAt: nowIso_() });
+    return { success: true, prompt: data.lastInterviewPrompt, round: (Array.isArray(data.interviewRounds) ? data.interviewRounds.length : 0) + 1, readiness: computeLedgerReadiness_(data.skeleton, data.ledger || []) };
+  });
+}
+
+function importLedgerInterviewReply(buildSessionId, rawText) {
+  return withClientError_(function () {
+    const session = requireOpenBuildSession_(buildSessionId);
+    requirePassedQuizForMeeting_(session.meetingId);
+    const data = parseJsonCell_(session.dataJson, {});
+    assertApp_(nonEmptyString_(data.lastInterviewPrompt), 'INTERVIEW_PROMPT_REQUIRED', '先に取材プロンプトを作成し、生成AIの回答を取得してください。');
+    assertApp_(nonEmptyString_(rawText), 'VALIDATION_ERROR', '生成AIの回答を貼り付けてください。');
+    const parsed = parseInterviewReply_(rawText);
+    recordManualAiInteraction_({ meetingId: session.meetingId, actionId: session.actionId, buildSessionId: session.buildSessionId, phase: 'ledger_interview' }, data.lastInterviewPrompt, rawText, { valid: true, errors: [] });
+    const applied = applyLedgerDiff_(data.ledger || [], parsed.diffEntries);
+    data.ledger = applied.entries;
+    const attempts = isPlainObject_(data.questionAttempts) ? data.questionAttempts : {};
+    parsed.questions.forEach(function (question) {
+      const key = interviewQuestionKey_(question);
+      attempts[key] = Number(attempts[key] || 0) + 1;
+      question.repeatCount = attempts[key];
+    });
+    data.questionAttempts = attempts;
+    data.pendingQuestions = parsed.questions;
+    data.lastInterviewPrompt = '';
+    data.gatePassed = false;
+    const readiness = computeLedgerReadiness_(data.skeleton, data.ledger);
+    data.interviewRounds = (Array.isArray(data.interviewRounds) ? data.interviewRounds : []).concat([{
+      round: (Array.isArray(data.interviewRounds) ? data.interviewRounds.length : 0) + 1,
+      score: readiness.overallScore, confirmedCount: readiness.confirmedCount, at: nowIso_()
+    }]);
+    pushLedgerAudit_(data, 'interview', 'ラウンド' + data.interviewRounds.length + ': 追加' + applied.added + '件 / 更新' + applied.updated + '件 / 準備度' + readiness.overallScore + '%');
+    // 収束の制御（§5.4）: スコアが2ラウンド連続でほぼ増えなければ、残りの降格を提案する。
+    const hint = APP_CONFIG.ledgerInterview.stagnantRoundsBeforeDemotionHint;
+    const rounds = data.interviewRounds;
+    const stagnant = rounds.length > hint && rounds.slice(-hint - 1).every(function (round, index, list) {
+      return index === 0 || round.score <= list[index - 1].score;
+    });
+    updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: readiness.gatePassed ? 6 : 5, dataJson: data, updatedAt: nowIso_() });
+    return {
+      success: true, applied: { added: applied.added, updated: applied.updated, skipped: applied.skipped },
+      readiness: readiness, questions: parsed.questions, sections: parsed.sections,
+      stagnant: stagnant,
+      demotionCandidates: parsed.questions.filter(function (question) { return Number(question.repeatCount || 0) >= 2; }),
+      round: rounds.length, ledger: data.ledger
+    };
+  });
+}
+
+function interviewQuestionKey_(question) {
+  const stepRef = String(question && question.stepRef || '');
+  const slot = String(question && question.slot || '');
+  if (stepRef && slot) return stepRef + '|' + slot;
+  const firstLine = String(question && question.text || '').split(/\r?\n/)[0]
+    .replace(/^(?:[>＞]?\s*)?(?:Q\s*\d+|質問\s*\d+|\d+\s*[\.．)])\s*/i, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120);
+  return ['unscoped', firstLine].join('|');
+}
+
+// ---- STEP 6: 準備度ゲートの操作 ----
+
+function updateLedgerEntry(buildSessionId, entryId, action, value) {
+  return withClientError_(function () {
+    const session = requireOpenBuildSession_(buildSessionId);
+    requirePassedQuizForMeeting_(session.meetingId);
+    const data = parseJsonCell_(session.dataJson, {});
+    const entry = (Array.isArray(data.ledger) ? data.ledger : []).filter(function (item) { return String(item.entryId) === String(entryId); })[0];
+    assertApp_(entry, 'LEDGER_ENTRY_NOT_FOUND', '台帳エントリが見つかりません: ' + entryId);
+    if (action === 'confirm') {
+      if (nonEmptyString_(value)) entry.value = value.trim();
+      assertApp_(nonEmptyString_(entry.value), 'VALIDATION_ERROR', '確認済みにするには値が必要です。正しい値を入力してください。');
+      entry.confidence = 'confirmed';
+      entry.deferred = false;
+      entry.evidence = { type: 'user_answer', ref: '画面で本人が確認', quote: entry.evidence && entry.evidence.quote ? entry.evidence.quote : '' };
+      pushLedgerAudit_(data, 'confirm', entryId + '「' + entry.claim.slice(0, 30) + '」を confirmed 化');
+    } else if (action === 'defer') {
+      entry.deferred = true;
+      pushLedgerAudit_(data, 'defer', entryId + '「' + entry.claim.slice(0, 30) + '」を作業前に確認へ降格');
+    } else if (action === 'reopen') {
+      entry.deferred = false;
+      pushLedgerAudit_(data, 'reopen', entryId + '「' + entry.claim.slice(0, 30) + '」の降格を取り消し');
+    } else {
+      throw new AppError('VALIDATION_ERROR', '台帳操作は confirm / defer / reopen のみです。');
+    }
+    entry.updatedAt = nowIso_();
+    data.gatePassed = false;
+    recordLedgerHumanAction_(session, '台帳エントリを' + action, entry);
+    const readiness = computeLedgerReadiness_(data.skeleton, data.ledger);
+    updateRow_('WorkGuideBuildSessions', session._rowNumber, { dataJson: data, updatedAt: nowIso_() });
+    return { success: true, entry: entry, readiness: readiness, ledger: data.ledger };
+  });
+}
+
+function deferAllOpenLedgerEntries(buildSessionId) {
+  return withClientError_(function () {
+    const session = requireOpenBuildSession_(buildSessionId);
+    requirePassedQuizForMeeting_(session.meetingId);
+    const data = parseJsonCell_(session.dataJson, {});
+    data.ledger = materializeMissingLedgerEntries_(data.skeleton, data.ledger || [], false, '人が未確認項目の一括降格を選択');
+    let deferred = 0;
+    (Array.isArray(data.ledger) ? data.ledger : []).forEach(function (entry) {
+      if (entry.confidence !== 'confirmed' && entry.deferred !== true) {
+        entry.deferred = true;
+        entry.updatedAt = nowIso_();
+        deferred += 1;
+      }
+    });
+    pushLedgerAudit_(data, 'defer_all', '残りの未確認' + deferred + '件を作業前に確認へ一括降格');
+    recordLedgerHumanAction_(session, '未確認項目を一括降格', { deferredCount: deferred });
+    const readiness = computeLedgerReadiness_(data.skeleton, data.ledger);
+    updateRow_('WorkGuideBuildSessions', session._rowNumber, { dataJson: data, updatedAt: nowIso_() });
+    return { success: true, deferredCount: deferred, readiness: readiness, ledger: data.ledger };
+  });
+}
+
+function deferLedgerSlot_(data, stepRef, slot, label) {
+  const ledger = Array.isArray(data.ledger) ? data.ledger : [];
+  let touched = 0;
+  ledger.forEach(function (entry) {
+    if (String(entry.stepRef) === stepRef && String(entry.slot) === slot && entry.confidence !== 'confirmed' && entry.deferred !== true) {
+      entry.deferred = true;
+      entry.updatedAt = nowIso_();
+      touched += 1;
+    }
+  });
+  if (!touched && ledgerSlotKeys_().indexOf(slot) >= 0) {
+    ledger.push({
+      entryId: nextLedgerEntryId_(ledger), stepRef: stepRef, slot: slot,
+      claim: nonEmptyString_(label) ? label : stepRef + ' の ' + ledgerSlotLabel_(slot),
+      value: '', evidence: { type: 'user_answer', ref: '人が作業前確認を選択', quote: '' },
+      confidence: 'unknown', note: '', deferred: true, updatedAt: nowIso_()
+    });
+    touched = 1;
+  }
+  data.ledger = ledger;
+  if (touched) pushLedgerAudit_(data, 'defer', stepRef + ' / ' + slot + ' を作業前に確認へ降格');
+}
+
+// ---- STEP 6: ガイド生成（P3）。台帳を唯一の事実源として直列化する ----
+
+function prepareWorkGuidePrompt(buildSessionId, confirmed) {
+  return withClientError_(function () {
+    const session = requireOpenBuildSession_(buildSessionId);
+    requirePassedQuizForMeeting_(session.meetingId);
+    assertApp_(confirmed === true, 'REVIEW_CONFIRMATION_REQUIRED', '準備度ゲートの内容（確認済みの事実と、作業前に確認へ降格した項目）を確認してください。');
+    const data = parseJsonCell_(session.dataJson, {});
+    assertApp_(isPlainObject_(data.skeleton), 'SKELETON_REQUIRED', '先に STEP 4 で骨格と台帳を初期化してください。');
+    const ledger = Array.isArray(data.ledger) ? data.ledger : [];
+    const readiness = computeLedgerReadiness_(data.skeleton, ledger);
+    assertApp_(readiness.gatePassed, 'GATE_NOT_PASSED', '準備度ゲートを通過していません。unknown / assumed の項目を確認済みにするか、「作業前に確認」へ降格してください。', { holes: readiness.holes });
+    data.gatePassed = true;
+    data.lastAiPrompt = buildLedgerGuidePrompt_({
+      action: data.action,
+      meeting: data.meeting,
+      skeleton: data.skeleton,
+      confirmedEntries: ledger.filter(function (entry) { return entry.confidence === 'confirmed'; }),
+      deferredEntries: ledger.filter(function (entry) { return entry.deferred === true; }).map(function (entry) {
+        return { entryId: entry.entryId, stepRef: entry.stepRef, slot: entry.slot, claim: entry.claim, value: entry.value, confidence: entry.confidence };
+      }),
+      allowedScripts: listRegisteredActions_(),
+      selectedSources: data.selectedSources || [],
+      workGuideId: data.revisionWorkGuideId || '',
+      version: data.revisionWorkGuideId ? Number(requireWorkGuideRecord_(data.revisionWorkGuideId).currentVersion) + 1 : 1
+    });
+    data.lastAiPromptPhase = 'work_guide_generation';
+    updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: 6, dataJson: data, updatedAt: nowIso_() });
+    return { success: true, prompt: data.lastAiPrompt, readiness: readiness };
+  });
+}
+
+function prepareWorkGuideContext_(data, fileIds, knownPrerequisites) {
   const selectedSources = buildSelectedSourceContext_(fileIds || []);
   data.knownPrerequisites = Array.isArray(knownPrerequisites) ? knownPrerequisites.filter(nonEmptyString_) : [];
-  data.prerequisiteAnswers = isPlainObject_(prerequisiteAnswers) ? prerequisiteAnswers : {};
   data.selectedSources = selectedSources.map(function (source) {
     return { fileId: source.fileId, fileName: source.fileName, url: source.url, snapshotAt: source.snapshotAt };
   });
@@ -3095,9 +4172,6 @@ function prepareWorkGuideContext_(data, fileIds, knownPrerequisites, prerequisit
       action: data.action,
       meeting: data.meeting,
       knownPrerequisites: data.knownPrerequisites,
-      prerequisiteQuestionsAndAnswers: (data.prerequisiteQuestions || []).map(function (question) {
-        return { question: question, answer: data.prerequisiteAnswers[question] || '' };
-      }),
       selectedSources: selectedSources,
       allowedScripts: listRegisteredActions_(),
       workGuideId: data.revisionWorkGuideId || '',
@@ -3106,27 +4180,108 @@ function prepareWorkGuideContext_(data, fileIds, knownPrerequisites, prerequisit
   };
 }
 
+// ---- STEP 7: JSON取込。スキーマ検証に加えて台帳突合（§7.3）を行う ----
+
 function importWorkGuideToBuild(buildSessionId, rawText) {
   return withClientError_(function () {
     const session = requireOpenBuildSession_(buildSessionId);
     requirePassedQuizForMeeting_(session.meetingId);
     const data = parseJsonCell_(session.dataJson, {});
-    assertApp_(data.revisionWorkGuideId || nonEmptyString_(data.approvedGuidePlan), 'GUIDE_PLAN_REQUIRED', 'JSONを取り込む前に、作業ガイドの目的と具体作業を設計案で確認してください。');
+    assertApp_(data.gatePassed === true, 'GATE_NOT_PASSED', 'JSONを取り込む前に、STEP 6 の準備度ゲートを通過してガイド生成プロンプトを作成してください。');
     const guide = parsePastedJson_(rawText);
     // AIが発明したIDで保存に失敗しないよう、改訂時は元のID、新規作成時は空文字へ正規化する。
     guide.workGuideId = data.revisionWorkGuideId || '';
     if (!guide.sourceSnapshots || !guide.sourceSnapshots.length) guide.sourceSnapshots = data.selectedSources || [];
     validateWorkGuide_(guide);
+    // 台帳突合: 本文中の URL・evidenceRefs が confirmed エントリに無ければ「出典不明の値」として拒否する。
+    const ledgerErrors = assessGuideAgainstLedger_(guide, data.ledger || []);
+    if (ledgerErrors.length) {
+      if (nonEmptyString_(data.lastAiPrompt)) {
+        recordManualAiInteraction_({ meetingId: session.meetingId, actionId: session.actionId, buildSessionId: session.buildSessionId, phase: data.lastAiPromptPhase || 'work_guide_generation' }, data.lastAiPrompt, rawText, { valid: false, errors: ledgerErrors });
+      }
+      throw new AppError('LEDGER_MISMATCH', '台帳にない具体値がガイドに含まれています（' + ledgerErrors.length + '件）。ハルシネーションの可能性があります。', { errors: ledgerErrors });
+    }
     data.importedWorkGuide = guide;
     data.depthFindings = assessWorkGuideDepth_(guide);
+    data.deskReview = null;
     if (nonEmptyString_(data.lastAiPrompt)) {
       recordManualAiInteraction_({ meetingId: session.meetingId, actionId: session.actionId, buildSessionId: session.buildSessionId, phase: data.lastAiPromptPhase || 'work_guide_generation' }, data.lastAiPrompt, rawText, { valid: true, errors: [] });
       data.lastAiPrompt = '';
       data.lastAiPromptPhase = '';
     }
-    updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: 9, dataJson: data, updatedAt: nowIso_() });
+    updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: 8, dataJson: data, updatedAt: nowIso_() });
     return { success: true, workGuide: guide, depthFindings: data.depthFindings };
   });
+}
+
+// ---- STEP 8: 机上実行レビュー（P4）と再調整 ----
+
+function prepareDeskReviewPrompt(buildSessionId) {
+  return withClientError_(function () {
+    const session = requireOpenBuildSession_(buildSessionId);
+    requirePassedQuizForMeeting_(session.meetingId);
+    const data = parseJsonCell_(session.dataJson, {});
+    assertApp_(isPlainObject_(data.importedWorkGuide), 'DRAFT_NOT_FOUND', '先に STEP 7 で作業ガイドJSONを取り込んでください。');
+    data.lastDeskReviewPrompt = buildDeskReviewPrompt_(data.importedWorkGuide);
+    updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: 8, dataJson: data, updatedAt: nowIso_() });
+    return { success: true, prompt: data.lastDeskReviewPrompt };
+  });
+}
+
+function importDeskReviewReply(buildSessionId, rawText) {
+  return withClientError_(function () {
+    const session = requireOpenBuildSession_(buildSessionId);
+    requirePassedQuizForMeeting_(session.meetingId);
+    const data = parseJsonCell_(session.dataJson, {});
+    assertApp_(nonEmptyString_(data.lastDeskReviewPrompt), 'DESK_REVIEW_PROMPT_REQUIRED', '先に机上実行レビュープロンプトを作成し、生成AIの回答を取得してください。');
+    assertApp_(nonEmptyString_(rawText), 'VALIDATION_ERROR', '生成AIの回答を貼り付けてください。');
+    const parsed = parseDeskReviewReply_(rawText);
+    assertApp_(parsed.passed || parsed.findings.length, 'DESK_REVIEW_PARSE_ERROR', '机上実行レビュー結果を判定できません。最後のJSONブロックに passed と findings を含めてください。');
+    recordManualAiInteraction_({ meetingId: session.meetingId, actionId: session.actionId, buildSessionId: session.buildSessionId, phase: 'desk_review' }, data.lastDeskReviewPrompt, rawText, { valid: true, errors: [] });
+    data.lastDeskReviewPrompt = '';
+    if (parsed.findings.length) {
+      // 詰まりは台帳の unknown として還流し、取材ループ（STEP 5）か降格で解消する（§8）。
+      const normalizedFindings = parsed.findings.map(function (finding) {
+        finding.stepRef = resolveDeskReviewStepRef_(data, finding.stepRef);
+        return finding;
+      });
+      const applied = applyLedgerDiff_(data.ledger || [], normalizedFindings.map(function (finding) {
+        return {
+          stepRef: finding.stepRef, slot: finding.slot, claim: '[' + finding.type + '] ' + finding.claim,
+          confidence: 'unknown', evidence: { type: 'ai_knowledge', ref: '机上実行レビュー', quote: '' }
+        };
+      }));
+      data.ledger = applied.entries;
+      data.gatePassed = false;
+      data.deskReview = { passed: false, findings: normalizedFindings, trace: parsed.trace, at: nowIso_() };
+      pushLedgerAudit_(data, 'desk_review', '机上実行レビュー: 詰まり' + normalizedFindings.length + '件を台帳へ還流');
+    } else {
+      data.deskReview = { passed: true, findings: [], trace: parsed.trace, guideFingerprint: fingerprint_(data.importedWorkGuide), at: nowIso_() };
+      pushLedgerAudit_(data, 'desk_review', '机上実行レビュー: 完走');
+    }
+    const readiness = isPlainObject_(data.skeleton) ? computeLedgerReadiness_(data.skeleton, data.ledger || []) : null;
+    const nextStep = parsed.findings.length ? 5 : 9;
+    updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: nextStep, dataJson: data, updatedAt: nowIso_() });
+    return { success: true, passed: data.deskReview.passed, findings: data.deskReview.findings, trace: parsed.trace, readiness: readiness, ledger: data.ledger || [], currentStep: nextStep };
+  });
+}
+
+function resolveDeskReviewStepRef_(data, stepRef) {
+  const skeleton = data && data.skeleton;
+  if (!skeleton || !Array.isArray(skeleton.steps)) return String(stepRef || '');
+  if (skeleton.steps.some(function (step) { return String(step.skeletonId) === String(stepRef); })) return String(stepRef);
+  const guide = data.importedWorkGuide || data.priorWorkGuide;
+  const guideStep = guide && Array.isArray(guide.steps)
+    ? guide.steps.filter(function (step) { return String(step.stepId) === String(stepRef); })[0]
+    : null;
+  if (guideStep && Array.isArray(guideStep.evidenceRefs)) {
+    const referenced = (data.ledger || []).filter(function (entry) {
+      return guideStep.evidenceRefs.indexOf(entry.entryId) >= 0 && nonEmptyString_(entry.stepRef);
+    })[0];
+    if (referenced) return String(referenced.stepRef);
+  }
+  const order = guideStep ? Number(guideStep.order) : Number(String(stepRef || '').replace(/\D/g, ''));
+  return skeleton.steps[order - 1] ? String(skeleton.steps[order - 1].skeletonId) : String(stepRef || '');
 }
 
 function prepareWorkGuideDepthCheckPrompt(buildSessionId) {
@@ -3134,12 +4289,13 @@ function prepareWorkGuideDepthCheckPrompt(buildSessionId) {
     const session = requireOpenBuildSession_(buildSessionId);
     requirePassedQuizForMeeting_(session.meetingId);
     const data = parseJsonCell_(session.dataJson, {});
-    assertApp_(isPlainObject_(data.importedWorkGuide), 'DRAFT_NOT_FOUND', '先に STEP 8 で作業ガイドJSONを取り込んでください。');
+    assertApp_(isPlainObject_(data.importedWorkGuide), 'DRAFT_NOT_FOUND', '先に STEP 7 で作業ガイドJSONを取り込んでください。');
     const findings = assessWorkGuideDepth_(data.importedWorkGuide);
     data.depthFindings = findings;
-    data.lastAiPrompt = buildWorkGuideDepthCheckPrompt_(data.importedWorkGuide, findings);
+    data.lastAiPrompt = buildWorkGuideDepthCheckPrompt_(data.importedWorkGuide, findings) +
+      '\n\n確認済みの知識台帳（ここにない具体値は追加禁止）:\n' + JSON.stringify((data.ledger || []).filter(function (entry) { return entry.confidence === 'confirmed'; }), null, 2);
     data.lastAiPromptPhase = 'work_guide_depth_check';
-    updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: 9, dataJson: data, updatedAt: nowIso_() });
+    updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: 8, dataJson: data, updatedAt: nowIso_() });
     return { success: true, prompt: data.lastAiPrompt, findings: findings };
   });
 }
@@ -3149,12 +4305,13 @@ function prepareWorkGuideRevisionPrompt(buildSessionId, feedback) {
     const session = requireOpenBuildSession_(buildSessionId);
     requirePassedQuizForMeeting_(session.meetingId);
     const data = parseJsonCell_(session.dataJson, {});
-    assertApp_(isPlainObject_(data.importedWorkGuide), 'DRAFT_NOT_FOUND', '先に STEP 8 で作業ガイドJSONを取り込んでください。');
+    assertApp_(isPlainObject_(data.importedWorkGuide), 'DRAFT_NOT_FOUND', '先に STEP 7 で作業ガイドJSONを取り込んでください。');
     assertApp_(nonEmptyString_(feedback), 'VALIDATION_ERROR', 'レビュー指摘を入力してください。');
     data.reviewFeedbacks = (Array.isArray(data.reviewFeedbacks) ? data.reviewFeedbacks : []).concat([{ feedback: feedback.trim(), createdAt: nowIso_() }]);
-    data.lastAiPrompt = buildWorkGuideRevisionPrompt_(data.importedWorkGuide, feedback.trim());
+    data.lastAiPrompt = buildWorkGuideRevisionPrompt_(data.importedWorkGuide, feedback.trim()) +
+      '\n\n確認済みの知識台帳（ここにない具体値は追加禁止）:\n' + JSON.stringify((data.ledger || []).filter(function (entry) { return entry.confidence === 'confirmed'; }), null, 2);
     data.lastAiPromptPhase = 'work_guide_revision';
-    updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: 9, dataJson: data, updatedAt: nowIso_() });
+    updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: 8, dataJson: data, updatedAt: nowIso_() });
     return { success: true, prompt: data.lastAiPrompt };
   });
 }
@@ -3191,6 +4348,19 @@ function cancelWorkGuideBuild(buildSessionId) {
   });
 }
 
+function pushLedgerAudit_(data, type, detail) {
+  data.ledgerAudit = (Array.isArray(data.ledgerAudit) ? data.ledgerAudit : []).concat([{ at: nowIso_(), type: type, detail: detail }]);
+}
+
+function recordLedgerHumanAction_(session, actionLabel, detail) {
+  recordManualAiInteraction_(
+    { meetingId: session.meetingId, actionId: session.actionId, buildSessionId: session.buildSessionId, phase: 'ledger_change' },
+    '知識台帳の画面操作: ' + actionLabel,
+    JSON.stringify({ action: actionLabel, detail: detail, at: nowIso_() }, null, 2),
+    { valid: true, errors: [] }
+  );
+}
+
 function requireBuildSession_(buildSessionId) {
   const session = findRow_('WorkGuideBuildSessions', function (row) { return String(row.buildSessionId) === String(buildSessionId); });
   assertApp_(session, 'BUILD_SESSION_NOT_FOUND', '作業ガイド作成セッションが見つかりません。');
@@ -3208,6 +4378,9 @@ function hydrateBuildSession_(session) {
   result.currentStep = Number(result.currentStep);
   result.data = parseJsonCell_(result.dataJson, {});
   delete result.dataJson;
+  if (isPlainObject_(result.data.skeleton)) {
+    result.readiness = computeLedgerReadiness_(result.data.skeleton, result.data.ledger || []);
+  }
   return result;
 }
 
@@ -3290,6 +4463,27 @@ function saveExecutionStep(executionId, inputValues, scriptParams) {
     } finally {
       lock.releaseLock();
     }
+  });
+}
+
+// 実行フィードバック（GUIDE_DEEPDIVE_DESIGN §9.1）: 「ガイドのみで作業が完了する」の成功基準を
+// そのまま改善入力にする。ガイド外の資料を見た・人に聞いた事実を1行で記録し、
+// 次バージョン作成時の取材ループの初期質問リストへ還流する。
+function recordExecutionExternalReference(executionId, stepId, note) {
+  return withClientError_(function () {
+    const execution = requireExecution_(executionId);
+    assertApp_([APP_CONFIG.statuses.executionInProgress, APP_CONFIG.statuses.executionPaused].indexOf(String(execution.status)) >= 0, 'EXECUTION_CLOSED', 'この実行は完了済みです。');
+    assertApp_(nonEmptyString_(note), 'VALIDATION_ERROR', '何を調べたか・誰に聞いたかを1行で入力してください。');
+    assertApp_(note.trim().length <= 500, 'VALIDATION_ERROR', 'ガイド外参照の記録は500文字以内にしてください。');
+    const versionNo = Number(String(execution.workGuideVersionId).split('-V').pop());
+    const guide = getWorkGuideOrThrow_(execution.workGuideId, versionNo).guide;
+    assertApp_(guide.steps.some(function (step) { return String(step.stepId) === String(stepId); }), 'STEP_NOT_FOUND', '記録対象の手順が作業ガイドにありません。');
+    const data = parseJsonCell_(execution.executionDataJson, { stepData: {}, completedStepIds: [], scriptResults: {} });
+    data.externalReferences = (Array.isArray(data.externalReferences) ? data.externalReferences : []).concat([{
+      stepId: nonEmptyString_(stepId) ? String(stepId) : '', note: note.trim(), at: nowIso_()
+    }]);
+    updateRow_('WorkGuideExecutions', execution._rowNumber, { executionDataJson: data });
+    return { success: true, executionData: data, count: data.externalReferences.length };
   });
 }
 
@@ -3464,9 +4658,19 @@ function saveWorkGuide(payload) {
       const initialBuild = requireBuildSession_(payload.buildSessionId);
       assertApp_(String(initialBuild.actionId) === String(action.actionId), 'ID_MISMATCH', '作成セッションと作業候補が一致しません。');
       assertApp_(['in_progress', 'draft', 'completed'].indexOf(String(initialBuild.status)) >= 0, 'BUILD_SESSION_CLOSED', 'この作成セッションは終了済みです。');
+      const initialBuildData = parseJsonCell_(initialBuild.dataJson, {});
       if (payload.generationMode === 'automatic') {
-        const initialBuildData = parseJsonCell_(initialBuild.dataJson, {});
         assertApp_(initialBuildData.creationMode === 'automatic', 'MANUAL_BUILD_IN_PROGRESS', '手動作成へ切り替えられたため、自動生成したガイドは保存しません。');
+      }
+      if (isPlainObject_(initialBuildData.skeleton) && Array.isArray(initialBuildData.ledger)) {
+        const readiness = computeLedgerReadiness_(initialBuildData.skeleton, initialBuildData.ledger);
+        assertApp_(readiness.gatePassed && initialBuildData.gatePassed === true, 'GATE_NOT_PASSED', '準備度ゲートを通過したガイドだけ保存できます。', { holes: readiness.holes });
+        const ledgerErrors = assessGuideAgainstLedger_(payload.workGuide, initialBuildData.ledger);
+        assertApp_(!ledgerErrors.length, 'LEDGER_MISMATCH', '編集後のガイドが知識台帳と一致しないため保存できません。', { errors: ledgerErrors });
+        if (initialBuildData.creationMode !== 'automatic') {
+          assertApp_(initialBuildData.deskReview && initialBuildData.deskReview.passed === true, 'DESK_REVIEW_REQUIRED', '机上実行レビューで「完走」を確認してから保存してください。');
+          assertApp_(initialBuildData.deskReview.guideFingerprint === fingerprint_(payload.workGuide), 'DESK_REVIEW_STALE', '机上実行レビュー後に内容が変わっています。編集内容を一時保存し、最終稿でもう一度机上実行レビューを行ってください。');
+        }
       }
     }
     lock.waitLock(30000);
@@ -3558,7 +4762,7 @@ function saveWorkGuide(payload) {
       updateRow_('Actions', action._rowNumber, { status: state.targetStatus === APP_CONFIG.statuses.guideNeedsReview ? 'guide_review' : 'guide_ready' });
       if (payload.buildSessionId) {
         const build = requireBuildSession_(payload.buildSessionId);
-        updateRow_('WorkGuideBuildSessions', build._rowNumber, { currentStep: 11, status: 'completed', updatedAt: now });
+        updateRow_('WorkGuideBuildSessions', build._rowNumber, { currentStep: 10, status: 'completed', updatedAt: now });
       }
       completed.spreadsheetUpdated = true;
       persistSaveState_(requestRow, state, completed);
