@@ -494,6 +494,7 @@ const App = (function () {
     document.getElementById('builder-empty').classList.add('hidden');
     document.getElementById('builder-workspace').classList.remove('hidden');
     document.getElementById('build-session-label').textContent = session.buildSessionId;
+    document.getElementById('cancel-guide-build-button').classList.toggle('hidden', Boolean(session.data.revisionWorkGuideId) || session.status === 'completed');
     document.getElementById('builder-stepper').innerHTML = Array.from({ length: 11 }, function (_, index) {
       const step = index + 1;
       return '<li class="' + (step < session.currentStep ? 'done' : step === session.currentStep ? 'current' : '') + '">STEP ' + step + '</li>';
@@ -514,6 +515,22 @@ const App = (function () {
       if (session.data.lastAiPromptPhase === 'work_guide_generation') document.getElementById('guide-json-prompt-stage').classList.remove('hidden');
     }
     if (state.editGuide) { renderDraftPreview(); renderGuideEditor(); }
+  }
+
+  async function cancelBuild() {
+    const session = state.buildSession;
+    if (!session || !window.confirm('この作業ガイドの作成をやめ、ガイド対象から削除しますか？\nこの作成セッションは再開できなくなり、作業候補一覧にも表示されなくなります。')) return;
+    try {
+      await call('cancelWorkGuideBuild', session.buildSessionId);
+      state.buildSession = null;
+      state.editGuide = null;
+      state.saveRequestToken = '';
+      resetBuilderForm();
+      document.getElementById('builder-workspace').classList.add('hidden');
+      document.getElementById('builder-empty').classList.remove('hidden');
+      await showView('actions');
+      toast('作成を中止し、ガイド対象から削除しました。');
+    } catch (error) { showError(error); }
   }
 
   async function prepareGuidePlanPrompt() {
@@ -722,6 +739,8 @@ const App = (function () {
       output.className = 'validation-box success';
       output.innerHTML = '<strong>保存完了</strong><p>' + escapeHtml(result.workGuideId + ' v' + result.version) + '</p><p><a target="_blank" href="' + attr(result.documentUrl) + '">Googleドキュメント</a> / <a target="_blank" href="' + attr(result.jsonUrl) + '">JSON</a></p><p>会議終了から ' + result.minutesFromMeetingEnd + '分（15分目標: ' + (result.within15Minutes ? '達成' : '超過') + '）</p>';
       state.buildSession.currentStep = 11;
+      state.buildSession.status = 'completed';
+      document.getElementById('cancel-guide-build-button').classList.add('hidden');
       toast('作業ガイドを2形式で保存しました。');
     } catch (error) {
       button.disabled = false;
@@ -1150,7 +1169,7 @@ const App = (function () {
     loadTranscriptWorkflows: loadTranscriptWorkflows, selectTranscript: selectTranscript, completeTranscript: completeTranscript, reopenTranscript: reopenTranscript,
     selectMeeting: selectMeeting, prepareAnalysisJsonPrompt: prepareAnalysisJsonPrompt, validateAnalysis: validateAnalysis, saveAnalysis: saveAnalysis, openQuiz: openQuiz,
     answerSingle: answerSingle, continueSingle: continueSingle, submitBatchQuiz: submitBatchQuiz, submitCurrentQuiz: submitCurrentQuiz, retryCurrentQuiz: retryCurrentQuiz,
-    loadActions: loadActions, startBuild: startBuild, reviseGuide: reviseGuide, searchSources: searchSources, prepareGuidePlanPrompt: prepareGuidePlanPrompt, prepareGuidePrompt: prepareGuidePrompt,
+    loadActions: loadActions, startBuild: startBuild, reviseGuide: reviseGuide, cancelBuild: cancelBuild, searchSources: searchSources, prepareGuidePlanPrompt: prepareGuidePlanPrompt, prepareGuidePrompt: prepareGuidePrompt,
     importGuide: importGuide, prepareRevisionPrompt: prepareRevisionPrompt, addGuideStep: addGuideStep, deleteGuideStep: deleteGuideStep, moveGuideStep: moveGuideStep,
     duplicateGuideStep: duplicateGuideStep, saveBuildDraft: saveBuildDraft, saveGuide: saveGuide, loadGuides: loadGuides,
     openGuideDetail: openGuideDetail, approveSelectedGuide: approveSelectedGuide, requestSelectedGuideRevision: requestSelectedGuideRevision, backToGuideList: backToGuideList, startExecution: startExecution, loadExecutions: loadExecutions, openExecution: openExecution,

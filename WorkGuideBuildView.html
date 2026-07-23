@@ -1,10 +1,10 @@
 <section id="view-builder" class="view">
-  <div class="page-heading"><div><p class="eyebrow">MANUAL GUIDE CREATION</p><h2>生成AIとやりとりして作業ガイドを作成</h2></div><div><span id="build-session-label" class="meta"></span><button class="secondary" onclick="App.showView('actions')">← 候補選択へ戻る</button></div></div>
+  <div class="page-heading"><div><p class="eyebrow">MANUAL GUIDE CREATION</p><h2>生成AIとやりとりして作業ガイドを作成</h2></div><div class="button-row"><span id="build-session-label" class="meta"></span><button id="cancel-guide-build-button" class="danger" onclick="App.cancelBuild()">このガイドは不要</button><button class="secondary" onclick="App.showView('actions')">← 候補選択へ戻る</button></div></div>
   <div id="builder-empty" class="notice info">作業候補画面から、必要な候補の「ガイド作成」を押してください。</div>
   <div id="builder-workspace" class="hidden">
     <div class="notice info"><strong>この作成方法ではアプリから生成AI APIを呼び出しません。</strong><br>プロンプトをコピーして任意の生成AIとやりとりし、返ってきたJSONを貼り付けてください。API自動生成の設定に関係なく利用できます。</div>
     <ol id="builder-stepper" class="stepper"></ol>
-    <article class="panel"><h3>STEP 1 作業候補を確認する</h3><div id="builder-action"></div></article>
+    <article class="panel"><h3>STEP 1 作業候補を確認する</h3><div id="builder-action"></div><p class="muted">作成を進めてから不要だと分かった場合は、画面上部の「このガイドは不要」で作成を中止し、ガイド対象から削除できます。</p></article>
     <article class="panel"><h3>STEP 2 現在分かっている前提条件を確認する</h3><label>1行に1件<textarea id="known-prerequisites" rows="4"></textarea></label></article>
     <article class="panel"><h3>STEP 3–4 AIが整理した不足条件へ回答する</h3><p class="muted">会議解析のAI回答で作られた質問です。これによりAI往復を基本2回に保ちます。</p><div id="prerequisite-questions"></div></article>
     <article class="panel"><h3>STEP 5–6 過去資料を検索・選択する</h3><div class="inline-form"><label>Drive検索<input id="source-query" minlength="2"></label><button onclick="App.searchSources()">検索</button></div><div id="source-results" class="item-list"></div></article>

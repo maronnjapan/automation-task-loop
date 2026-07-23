@@ -9,11 +9,13 @@ function saveWorkGuide(payload) {
     assertApp_(payload.confirmed === true, 'SAVE_CONFIRMATION_REQUIRED', '保存前の確認に同意してください。');
     validateWorkGuide_(payload.workGuide || {});
     const action = requireAction_(payload.actionId);
+    assertApp_(String(action.status) !== 'guide_not_required', 'ACTION_NOT_GUIDE_TARGET', 'この作業候補はガイド対象から削除されています。');
     assertApp_(String(action.meetingId) === String(payload.meetingId), 'ID_MISMATCH', '作業候補と会議IDが一致しません。');
     requirePassedQuizForMeeting_(action.meetingId);
     if (payload.buildSessionId) {
       const initialBuild = requireBuildSession_(payload.buildSessionId);
       assertApp_(String(initialBuild.actionId) === String(action.actionId), 'ID_MISMATCH', '作成セッションと作業候補が一致しません。');
+      assertApp_(['in_progress', 'draft', 'completed'].indexOf(String(initialBuild.status)) >= 0, 'BUILD_SESSION_CLOSED', 'この作成セッションは終了済みです。');
       if (payload.generationMode === 'automatic') {
         const initialBuildData = parseJsonCell_(initialBuild.dataJson, {});
         assertApp_(initialBuildData.creationMode === 'automatic', 'MANUAL_BUILD_IN_PROGRESS', '手動作成へ切り替えられたため、自動生成したガイドは保存しません。');
@@ -34,7 +36,7 @@ function saveWorkGuide(payload) {
     }
     if (payload.buildSessionId) {
       const lockedBuild = requireBuildSession_(payload.buildSessionId);
-      assertApp_(String(lockedBuild.status) !== 'completed' || completed.spreadsheetUpdated, 'BUILD_SESSION_CLOSED', 'この作成セッションは保存済みです。');
+      assertApp_(['in_progress', 'draft'].indexOf(String(lockedBuild.status)) >= 0 || completed.spreadsheetUpdated, 'BUILD_SESSION_CLOSED', 'この作成セッションは終了済みです。');
       if (payload.generationMode === 'automatic') {
         const lockedBuildData = parseJsonCell_(lockedBuild.dataJson, {});
         assertApp_(lockedBuildData.creationMode === 'automatic', 'MANUAL_BUILD_IN_PROGRESS', '手動作成へ切り替えられたため、自動生成したガイドは保存しません。');

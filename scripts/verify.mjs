@@ -196,8 +196,18 @@ assert.equal(vm.runInContext('meetingABuild.session.data.creationMode', context)
 assert.equal(vm.runInContext('nextActionForAiGuide_(false, {}, {}).actionId', context), 'ACT-A2');
 vm.runInContext(`
   var automatedMeetingABuild = startWorkGuideBuild('ACT-A2', 'automatic');
+  var cancelledMeetingABuild = cancelWorkGuideBuild(meetingABuild.session.buildSessionId);
+  var cancelledMeetingABuildAgain = cancelWorkGuideBuild(meetingABuild.session.buildSessionId);
+  var restartedCancelledBuild = startWorkGuideBuild('ACT-A1');
 `, context);
 assert.equal(vm.runInContext('automatedMeetingABuild.session.data.creationMode', context), 'automatic');
+assert.equal(vm.runInContext('cancelledMeetingABuild.success', context), true);
+assert.equal(vm.runInContext('queueRows.Actions[0].status', context), 'guide_not_required');
+assert.equal(vm.runInContext('queueRows.Actions[0].guideRecommended', context), false);
+assert.equal(vm.runInContext('queueRows.Actions[0].automationStatus', context), 'not_required');
+assert.equal(vm.runInContext('queueRows.WorkGuideBuildSessions[0].status', context), 'cancelled');
+assert.equal(vm.runInContext('cancelledMeetingABuildAgain.code', context), 'BUILD_SESSION_CLOSED');
+assert.equal(vm.runInContext('restartedCancelledBuild.code', context), 'ACTION_NOT_GUIDE_TARGET');
 assert.equal(vm.runInContext('nextActionForAiGuide_(false, {}, {}).actionId', context), 'ACT-A2');
 vm.runInContext(`
   var quizTestUpdates = [];
@@ -223,7 +233,7 @@ assert.equal(vm.runInContext('passedQuizResult.passed', context), true);
 assert.equal(vm.runInContext('quizTestUpdates[1].updates.status', context), 'completed');
 
 const allHtml = htmlFiles.map((file) => readFileSync(resolve(projectRoot, file), 'utf8')).join('\n');
-for (const id of ['ai-api-key', 'ai-auto-enabled', 'manual-guide-create-button', 'copy-analysis-prompt-button', 'analysis-review', 'analysis-review-confirm', 'analysis-json-prompt', 'guide-plan-prompt', 'guide-plan', 'guide-plan-confirm', 'guide-prompt', 'copy-guide-prompt-button', 'guide-json-import', 'copy-revision-prompt-button', 'guide-review-actions', 'guide-ai-history', 'quiz-ai-history']) {
+for (const id of ['ai-api-key', 'ai-auto-enabled', 'manual-guide-create-button', 'copy-analysis-prompt-button', 'analysis-review', 'analysis-review-confirm', 'analysis-json-prompt', 'guide-plan-prompt', 'guide-plan', 'guide-plan-confirm', 'guide-prompt', 'copy-guide-prompt-button', 'guide-json-import', 'copy-revision-prompt-button', 'cancel-guide-build-button', 'guide-review-actions', 'guide-ai-history', 'quiz-ai-history']) {
   assert.match(allHtml, new RegExp(`id=["']${id}["']`), `UI element #${id} is missing`);
 }
 assert.match(allHtml, /data-view=["']actions["'][^>]*>ガイド作成</, 'Manual guide creation must remain in the main navigation');
@@ -245,5 +255,9 @@ const workGuideBuildService = readFileSync(resolve(projectRoot, 'WorkGuideBuildS
 assert.match(workGuideBuildService, /requirePassedQuizForMeeting_\(action\.meetingId\)/, 'Work guide builds must enforce the meeting quiz gate');
 assert.match(workGuideBuildService, /MANUAL_BUILD_IN_PROGRESS/, 'Automatic generation must not take over an active manual build');
 assert.match(workGuideBuildService, /GUIDE_PLAN_REQUIRED/, 'New manual guide JSON imports must require an approved human-readable plan');
+assert.match(workGuideBuildService, /function cancelWorkGuideBuild\(/, 'Open guide builds must be cancellable');
+assert.match(workGuideBuildService, /guide_not_required/, 'Cancelled guide builds must be removed from guide targets');
+const actionService = readFileSync(resolve(projectRoot, 'ActionService.gs'), 'utf8');
+assert.match(actionService, /status\) !== 'guide_not_required'/, 'Removed guide targets must not reappear in the candidate list');
 
 console.log(`Verified ${gasFiles.length} GAS files, ${htmlFiles.length} HTML files, validators, manual/API guide creation, quiz-gated parallel queues, prompts, API parsing, and review UI wiring.`);

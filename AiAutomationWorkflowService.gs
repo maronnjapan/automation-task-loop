@@ -57,8 +57,11 @@ function processPendingAiAutomation_(summary, forceRetry) {
         const result = automateActionGuide_(action);
         summary.generatedGuides.push(result);
       } catch (error) {
-        updateRow_('Actions', action._rowNumber, { automationStatus: 'failed', automationError: error.message || String(error) });
-        summary.automationFailures.push({ meetingId: action.meetingId, actionId: action.actionId, phase: 'work_guide', error: error.message || String(error) });
+        const currentAction = findRow_('Actions', function (row) { return String(row.actionId) === String(action.actionId); });
+        if (currentAction && isActionAutoGuideRequired_(currentAction) && String(currentAction.status) !== 'guide_not_required') {
+          updateRow_('Actions', currentAction._rowNumber, { automationStatus: 'failed', automationError: error.message || String(error) });
+          summary.automationFailures.push({ meetingId: action.meetingId, actionId: action.actionId, phase: 'work_guide', error: error.message || String(error) });
+        }
       }
       refreshMeetingAutomationStatus_(action.meetingId);
       continue;
@@ -157,7 +160,7 @@ function updateAutomaticWorkGuideBuild_(buildSessionId, currentStep, data) {
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
-    const session = requireBuildSession_(buildSessionId);
+    const session = requireOpenBuildSession_(buildSessionId);
     const currentData = parseJsonCell_(session.dataJson, {});
     assertApp_(currentData.creationMode === 'automatic', 'MANUAL_BUILD_IN_PROGRESS', '手動作成へ切り替えられたため、自動生成を停止しました。');
     data.creationMode = 'automatic';

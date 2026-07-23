@@ -103,7 +103,11 @@ function listActionCandidates(meetingId) {
   return withClientError_(function () {
     const completed = completedMeetingIds_();
     const quizPassed = passedQuizMeetingIds_();
-    const rows = findRows_('Actions', function (row) { return (!meetingId || String(row.meetingId) === String(meetingId)) && !completed[String(row.meetingId)]; });
+    const rows = findRows_('Actions', function (row) {
+      return (!meetingId || String(row.meetingId) === String(meetingId)) &&
+        String(row.status) !== 'guide_not_required' &&
+        !completed[String(row.meetingId)];
+    });
     return { success: true, actions: rows.reverse().map(function (row) {
       const action = stripRowMetadata_(row);
       action.quizPassed = Boolean(quizPassed[String(action.meetingId)]);
@@ -180,8 +184,11 @@ function processPendingAiAutomation_(summary, forceRetry) {
         const result = automateActionGuide_(action);
         summary.generatedGuides.push(result);
       } catch (error) {
-        updateRow_('Actions', action._rowNumber, { automationStatus: 'failed', automationError: error.message || String(error) });
-        summary.automationFailures.push({ meetingId: action.meetingId, actionId: action.actionId, phase: 'work_guide', error: error.message || String(error) });
+        const currentAction = findRow_('Actions', function (row) { return String(row.actionId) === String(action.actionId); });
+        if (currentAction && isActionAutoGuideRequired_(currentAction) && String(currentAction.status) !== 'guide_not_required') {
+          updateRow_('Actions', currentAction._rowNumber, { automationStatus: 'failed', automationError: error.message || String(error) });
+          summary.automationFailures.push({ meetingId: action.meetingId, actionId: action.actionId, phase: 'work_guide', error: error.message || String(error) });
+        }
       }
       refreshMeetingAutomationStatus_(action.meetingId);
       continue;
@@ -280,7 +287,7 @@ function updateAutomaticWorkGuideBuild_(buildSessionId, currentStep, data) {
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
-    const session = requireBuildSession_(buildSessionId);
+    const session = requireOpenBuildSession_(buildSessionId);
     const currentData = parseJsonCell_(session.dataJson, {});
     assertApp_(currentData.creationMode === 'automatic', 'MANUAL_BUILD_IN_PROGRESS', '手動作成へ切り替えられたため、自動生成を停止しました。');
     data.creationMode = 'automatic';
@@ -2797,6 +2804,7 @@ function reopenTranscript(fileId) {
 function startWorkGuideBuild(actionId, creationMode) {
   return withClientError_(function () {
     const action = requireAction_(actionId);
+    assertApp_(String(action.status) !== 'guide_not_required', 'ACTION_NOT_GUIDE_TARGET', 'この作業候補はガイド対象から削除されています。');
     requirePassedQuizForMeeting_(action.meetingId);
     const requestedMode = creationMode === 'automatic' ? 'automatic' : 'manual';
     const lock = LockService.getScriptLock();
@@ -2871,9 +2879,8 @@ function startWorkGuideRevision(workGuideId) {
 
 function saveWorkGuideBuildProgress(buildSessionId, step, patch) {
   return withClientError_(function () {
-    const session = requireBuildSession_(buildSessionId);
+    const session = requireOpenBuildSession_(buildSessionId);
     requirePassedQuizForMeeting_(session.meetingId);
-    assertApp_(session.status === 'in_progress' || session.status === 'draft', 'BUILD_SESSION_CLOSED', 'この作成セッションは完了済みです。');
     const stepNumber = Number(step);
     assertApp_(Number.isInteger(stepNumber) && stepNumber >= 1 && stepNumber <= 11, 'VALIDATION_ERROR', '作成ステップは1〜11です。');
     const data = parseJsonCell_(session.dataJson, {});
@@ -2888,7 +2895,7 @@ function saveWorkGuideBuildProgress(buildSessionId, step, patch) {
 
 function prepareWorkGuidePlanPrompt(buildSessionId, fileIds, knownPrerequisites, prerequisiteAnswers) {
   return withClientError_(function () {
-    const session = requireBuildSession_(buildSessionId);
+    const session = requireOpenBuildSession_(buildSessionId);
     requirePassedQuizForMeeting_(session.meetingId);
     const data = parseJsonCell_(session.dataJson, {});
     const prepared = prepareWorkGuideContext_(data, fileIds, knownPrerequisites, prerequisiteAnswers);
@@ -2903,7 +2910,7 @@ function prepareWorkGuidePlanPrompt(buildSessionId, fileIds, knownPrerequisites,
 
 function prepareWorkGuidePrompt(buildSessionId, fileIds, knownPrerequisites, prerequisiteAnswers, approvedPlan, confirmed) {
   return withClientError_(function () {
-    const session = requireBuildSession_(buildSessionId);
+    const session = requireOpenBuildSession_(buildSessionId);
     requirePassedQuizForMeeting_(session.meetingId);
     assertApp_(confirmed === true, 'REVIEW_CONFIRMATION_REQUIRED', 'ガイドの目的と具体的な作業内容を確認してください。');
     assertApp_(nonEmptyString_(approvedPlan), 'VALIDATION_ERROR', '生成AIの作業ガイド設計案を貼り付け、必要なら修正してください。');
@@ -2948,7 +2955,7 @@ function prepareWorkGuideContext_(data, fileIds, knownPrerequisites, prerequisit
 
 function importWorkGuideToBuild(buildSessionId, rawText) {
   return withClientError_(function () {
-    const session = requireBuildSession_(buildSessionId);
+    const session = requireOpenBuildSession_(buildSessionId);
     requirePassedQuizForMeeting_(session.meetingId);
     const data = parseJsonCell_(session.dataJson, {});
     assertApp_(data.revisionWorkGuideId || nonEmptyString_(data.approvedGuidePlan), 'GUIDE_PLAN_REQUIRED', 'JSONを取り込む前に、作業ガイドの目的と具体作業を設計案で確認してください。');
@@ -2970,7 +2977,7 @@ function importWorkGuideToBuild(buildSessionId, rawText) {
 
 function prepareWorkGuideRevisionPrompt(buildSessionId, feedback) {
   return withClientError_(function () {
-    const session = requireBuildSession_(buildSessionId);
+    const session = requireOpenBuildSession_(buildSessionId);
     requirePassedQuizForMeeting_(session.meetingId);
     const data = parseJsonCell_(session.dataJson, {});
     assertApp_(isPlainObject_(data.importedWorkGuide), 'DRAFT_NOT_FOUND', '先に STEP 8 で作業ガイドJSONを取り込んでください。');
@@ -2983,9 +2990,47 @@ function prepareWorkGuideRevisionPrompt(buildSessionId, feedback) {
   });
 }
 
+function cancelWorkGuideBuild(buildSessionId) {
+  return withClientError_(function () {
+    const lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    let meetingId = '';
+    let actionId = '';
+    try {
+      const session = requireOpenBuildSession_(buildSessionId);
+      const data = parseJsonCell_(session.dataJson, {});
+      assertApp_(!data.revisionWorkGuideId, 'REVISION_CANNOT_REMOVE_TARGET', '保存済みガイドの改訂ではガイド対象から削除できません。');
+      const existingGuide = findRow_('WorkGuides', function (row) {
+        return String(row.actionId) === String(session.actionId);
+      });
+      assertApp_(!existingGuide, 'GUIDE_ALREADY_SAVED', '保存済みの作業ガイドがあるため、ガイド対象から削除できません。');
+      const action = requireAction_(session.actionId);
+      meetingId = String(session.meetingId);
+      actionId = String(session.actionId);
+      updateRow_('WorkGuideBuildSessions', session._rowNumber, { status: 'cancelled', updatedAt: nowIso_() });
+      updateRow_('Actions', action._rowNumber, {
+        status: 'guide_not_required',
+        guideRecommended: false,
+        automationStatus: 'not_required',
+        automationError: ''
+      });
+    } finally {
+      lock.releaseLock();
+    }
+    refreshMeetingAutomationStatus_(meetingId);
+    return { success: true, buildSessionId: String(buildSessionId), actionId: actionId, status: 'guide_not_required' };
+  });
+}
+
 function requireBuildSession_(buildSessionId) {
   const session = findRow_('WorkGuideBuildSessions', function (row) { return String(row.buildSessionId) === String(buildSessionId); });
   assertApp_(session, 'BUILD_SESSION_NOT_FOUND', '作業ガイド作成セッションが見つかりません。');
+  return session;
+}
+
+function requireOpenBuildSession_(buildSessionId) {
+  const session = requireBuildSession_(buildSessionId);
+  assertApp_(['in_progress', 'draft'].indexOf(String(session.status)) >= 0, 'BUILD_SESSION_CLOSED', 'この作成セッションは終了済みです。');
   return session;
 }
 
@@ -3243,11 +3288,13 @@ function saveWorkGuide(payload) {
     assertApp_(payload.confirmed === true, 'SAVE_CONFIRMATION_REQUIRED', '保存前の確認に同意してください。');
     validateWorkGuide_(payload.workGuide || {});
     const action = requireAction_(payload.actionId);
+    assertApp_(String(action.status) !== 'guide_not_required', 'ACTION_NOT_GUIDE_TARGET', 'この作業候補はガイド対象から削除されています。');
     assertApp_(String(action.meetingId) === String(payload.meetingId), 'ID_MISMATCH', '作業候補と会議IDが一致しません。');
     requirePassedQuizForMeeting_(action.meetingId);
     if (payload.buildSessionId) {
       const initialBuild = requireBuildSession_(payload.buildSessionId);
       assertApp_(String(initialBuild.actionId) === String(action.actionId), 'ID_MISMATCH', '作成セッションと作業候補が一致しません。');
+      assertApp_(['in_progress', 'draft', 'completed'].indexOf(String(initialBuild.status)) >= 0, 'BUILD_SESSION_CLOSED', 'この作成セッションは終了済みです。');
       if (payload.generationMode === 'automatic') {
         const initialBuildData = parseJsonCell_(initialBuild.dataJson, {});
         assertApp_(initialBuildData.creationMode === 'automatic', 'MANUAL_BUILD_IN_PROGRESS', '手動作成へ切り替えられたため、自動生成したガイドは保存しません。');
@@ -3268,7 +3315,7 @@ function saveWorkGuide(payload) {
     }
     if (payload.buildSessionId) {
       const lockedBuild = requireBuildSession_(payload.buildSessionId);
-      assertApp_(String(lockedBuild.status) !== 'completed' || completed.spreadsheetUpdated, 'BUILD_SESSION_CLOSED', 'この作成セッションは保存済みです。');
+      assertApp_(['in_progress', 'draft'].indexOf(String(lockedBuild.status)) >= 0 || completed.spreadsheetUpdated, 'BUILD_SESSION_CLOSED', 'この作成セッションは終了済みです。');
       if (payload.generationMode === 'automatic') {
         const lockedBuildData = parseJsonCell_(lockedBuild.dataJson, {});
         assertApp_(lockedBuildData.creationMode === 'automatic', 'MANUAL_BUILD_IN_PROGRESS', '手動作成へ切り替えられたため、自動生成したガイドは保存しません。');
