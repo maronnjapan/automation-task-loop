@@ -100,6 +100,9 @@
   .review-gate ul { margin: .35rem 0 .8rem 1.2rem; }
   .review-gate .check-line { margin-bottom: .85rem; }
   .json-stage { margin-top: 1rem; padding-top: 1rem; border-top: 2px solid var(--primary-soft); }
+  .plan-refine { margin: 1rem 0; padding: 1rem; border: 1px dashed var(--line); border-radius: 12px; background: #f9fbfc; }
+  .plan-refine > strong { display: block; margin-bottom: .35rem; }
+  .notice.warning ul { margin: .35rem 0 0 1.2rem; }
   .draft-preview h4 { margin: 0 0 .35rem; }
   .draft-preview h5 { margin: .8rem 0 .3rem; }
   .draft-preview ul { margin: 0 0 .5rem 1.1rem; }
@@ -263,9 +266,9 @@
     <article class="panel"><h3>STEP 2 現在分かっている前提条件を確認する</h3><label>1行に1件<textarea id="known-prerequisites" rows="4"></textarea></label></article>
     <article class="panel"><h3>STEP 3–4 AIが整理した不足条件へ回答する</h3><p class="muted">会議解析のAI回答で作られた質問です。これによりAI往復を基本2回に保ちます。</p><div id="prerequisite-questions"></div></article>
     <article class="panel"><h3>STEP 5–6 過去資料を検索・選択する</h3><div class="inline-form"><label>Drive検索<input id="source-query" minlength="2"></label><button onclick="App.searchSources()">検索</button></div><div id="source-results" class="item-list"></div></article>
-    <article class="panel"><h3>STEP 7 ガイドの目的と具体作業を合わせてからJSON化する</h3><p class="muted">最初に人が読むための設計案を作ります。内容を確認・修正して承認するまで、アプリ用JSONは作りません。</p><button onclick="App.prepareGuidePlanPrompt()">設計案プロンプトを作成</button><label>人が読む設計案のプロンプト<textarea id="guide-plan-prompt" rows="10" readonly></textarea></label><div class="button-row"><button id="copy-guide-plan-prompt-button" onclick="App.copyText('guide-plan-prompt')">設計案プロンプトをコピー</button></div><label>生成AIの作業ガイド設計案（内容を直接修正できます）<textarea id="guide-plan" class="human-readable" rows="16" placeholder="何をするガイドか、完了状態、必要な具体作業などを貼り付け"></textarea></label><div class="review-gate"><strong>JSON化する前の確認</strong><ul><li>ガイドの目的と完了状態が明確になっている</li><li>必要な作業が実行順に具体化されている</li><li>前提条件・注意点・今回含めない範囲が認識と合っている</li></ul><label class="check-line"><input id="guide-plan-confirm" type="checkbox"> この設計案の方向性で作業ガイドJSONを作成します</label><button onclick="App.prepareGuidePrompt()">この方向性でJSON用プロンプトを作成</button></div><div id="guide-json-prompt-stage" class="json-stage hidden"><label>ガイドJSON生成プロンプト<textarea id="guide-prompt" rows="10" readonly></textarea></label><div class="button-row"><button id="copy-guide-prompt-button" onclick="App.copyText('guide-prompt')">JSON生成プロンプトをコピー</button></div><p class="meta">コピー後、お使いの生成AIへ貼り付け、返ってきたJSONを STEP 8 へ貼り付けてください。</p></div></article>
+    <article class="panel"><h3>STEP 7 ガイドの目的と具体作業を合わせてからJSON化する</h3><p class="muted">最初に人が読むための設計案を作ります。内容を確認・修正して承認するまで、アプリ用JSONは作りません。</p><button onclick="App.prepareGuidePlanPrompt()">設計案プロンプトを作成</button><label>人が読む設計案のプロンプト<textarea id="guide-plan-prompt" rows="10" readonly></textarea></label><div class="button-row"><button id="copy-guide-plan-prompt-button" onclick="App.copyText('guide-plan-prompt')">設計案プロンプトをコピー</button></div><label>生成AIの作業ガイド設計案（内容を直接修正できます）<textarea id="guide-plan" class="human-readable" rows="16" placeholder="何をするガイドか、完了状態、必要な具体作業などを貼り付け"></textarea></label><div class="plan-refine"><strong>設計案の深掘り（納得いくまで何度でも）</strong><p class="muted">一度で理想の粒度にならなくても構いません。AIの質問への回答や、もっと具体化してほしい点を書いて深掘りプロンプトを作り、生成AIの改善版設計案を上の欄へ貼り直してください。各作業に「開く画面のURL・押すボタンの名称・入力する値・完了確認・失敗時の対処」が書かれるまで繰り返します。</p><label>AIの質問への回答・追加情報・具体化してほしい点（任意）<textarea id="plan-refine-feedback" rows="4" placeholder="例: 対象の管理画面は https://example.com/admin。手順3で入力する値の形式が分からないので、調べ方も書いてほしい"></textarea></label><button class="secondary" onclick="App.preparePlanRefinePrompt()">深掘りプロンプトを作成（上の設計案プロンプト欄が置き換わります）</button></div><div class="review-gate"><strong>JSON化する前の確認</strong><ul><li>ガイドの目的と完了状態が明確になっている</li><li>必要な作業が実行順に具体化され、各作業に開く画面・操作・入力値・完了確認・失敗時の対処が書かれている</li><li>前提条件・注意点・今回含めない範囲が認識と合っている</li></ul><label class="check-line"><input id="guide-plan-confirm" type="checkbox"> この設計案の方向性で作業ガイドJSONを作成します</label><button onclick="App.prepareGuidePrompt()">この方向性でJSON用プロンプトを作成</button></div><div id="guide-json-prompt-stage" class="json-stage hidden"><label>ガイドJSON生成プロンプト<textarea id="guide-prompt" rows="10" readonly></textarea></label><div class="button-row"><button id="copy-guide-prompt-button" onclick="App.copyText('guide-prompt')">JSON生成プロンプトをコピー</button></div><p class="meta">コピー後、お使いの生成AIへ貼り付け、返ってきたJSONを STEP 8 へ貼り付けてください。</p></div></article>
     <article class="panel"><h3>STEP 8 生成AIの回答JSONを取り込む</h3><p class="muted">生成AIから返された回答を、そのままここへ貼り付けます。初回回答もレビュー後の修正版も同じ欄を使います。</p><label>生成AIの回答<textarea id="guide-json-import" rows="10" placeholder="生成AIが返したJSONを貼り付け"></textarea></label><button onclick="App.importGuide()">検証して取り込む</button><div id="guide-import-validation" class="validation-box hidden"></div></article>
-    <article id="guide-review-panel" class="panel hidden"><h3>STEP 9 ドラフトを確認・生成AIと再調整する</h3><p class="muted">取り込んだドラフトを確認し、直したい点があれば修正プロンプトを作って生成AIともう一度やりとりします。修正版JSONは STEP 8 へ貼り直してください。納得できたら STEP 10 の編集へ進みます。</p><div id="guide-draft-preview" class="draft-preview"></div><label>レビュー指摘（修正してほしい点を具体的に）<textarea id="review-feedback" rows="4" placeholder="例: S2 の本文例が硬すぎるので、もう少し柔らかい文面にしてほしい"></textarea></label><button onclick="App.prepareRevisionPrompt()">修正プロンプトを作成</button><label>修正プロンプト<textarea id="revision-prompt" rows="8" readonly></textarea></label><button id="copy-revision-prompt-button" onclick="App.copyText('revision-prompt')">修正プロンプトをコピー</button></article>
+    <article id="guide-review-panel" class="panel hidden"><h3>STEP 9 ドラフトを確認・生成AIと再調整する</h3><p class="muted">取り込んだドラフトを確認します。アプリの具体度チェックが「開く画面・操作・入力値・完了確認」の不足を検出したら、具体度チェックプロンプトで生成AIに点検・修正させてください。直したい点があればレビュー指摘から修正プロンプトも作れます。どちらも修正版JSONは STEP 8 へ貼り直し、理想の粒度になるまで何度でも往復できます。納得できたら STEP 10 の編集へ進みます。</p><div id="guide-draft-preview" class="draft-preview"></div><div id="guide-depth-findings"></div><div class="button-row"><button class="secondary" onclick="App.prepareDepthCheckPrompt()">具体度チェックプロンプトを作成（AIに不足を点検・修正させる）</button></div><label>レビュー指摘（修正してほしい点を具体的に）<textarea id="review-feedback" rows="4" placeholder="例: S2 の本文例が硬すぎるので、もう少し柔らかい文面にしてほしい"></textarea></label><button onclick="App.prepareRevisionPrompt()">修正プロンプトを作成</button><label>修正プロンプト<textarea id="revision-prompt" rows="8" readonly></textarea></label><button id="copy-revision-prompt-button" onclick="App.copyText('revision-prompt')">修正プロンプトをコピー</button></article>
     <article id="guide-editor-panel" class="panel hidden"><h3>STEP 10 編集・確認</h3><div id="guide-editor"></div><div class="button-row"><button class="secondary" onclick="App.saveBuildDraft()">一時保存</button><button onclick="App.addGuideStep()">手順を追加</button></div></article>
     <article id="guide-save-panel" class="panel hidden"><h3>STEP 11 Google Driveへ保存</h3><div id="save-preview"></div><label class="check-line"><input id="guide-save-confirm" type="checkbox"> 内容と保存先を確認しました</label><button id="save-guide-button" onclick="App.saveGuide()">Googleドキュメント + JSON を保存</button><div id="guide-save-result"></div></article>
   </div>
@@ -850,6 +853,8 @@ const App = (function () {
   function resetBuilderForm() {
     document.getElementById('guide-plan-prompt').value = '';
     document.getElementById('guide-plan').value = '';
+    document.getElementById('plan-refine-feedback').value = '';
+    document.getElementById('guide-depth-findings').innerHTML = '';
     document.getElementById('guide-plan-confirm').checked = false;
     document.getElementById('guide-prompt').value = '';
     document.getElementById('guide-json-prompt-stage').classList.add('hidden');
@@ -891,7 +896,7 @@ const App = (function () {
       document.getElementById('guide-plan-confirm').checked = true;
     }
     if (session.data.lastAiPrompt) {
-      const promptField = session.data.lastAiPromptPhase === 'work_guide_revision' ? 'revision-prompt' : 'guide-prompt';
+      const promptField = ['work_guide_revision', 'work_guide_depth_check'].indexOf(session.data.lastAiPromptPhase) >= 0 ? 'revision-prompt' : 'guide-prompt';
       document.getElementById(promptField).value = session.data.lastAiPrompt;
       if (session.data.lastAiPromptPhase === 'work_guide_generation') document.getElementById('guide-json-prompt-stage').classList.remove('hidden');
     }
@@ -990,9 +995,12 @@ const App = (function () {
       state.editGuide = result.workGuide;
       state.saveRequestToken = '';
       state.buildSession.data.importedWorkGuide = result.workGuide;
+      state.buildSession.data.depthFindings = result.depthFindings || [];
       state.buildSession.currentStep = 9;
       box.className = 'validation-box success';
-      box.textContent = '検証OK。STEP 9 でドラフトを確認し、必要ならレビュー指摘から修正プロンプトを作成してください。';
+      box.textContent = (result.depthFindings || []).length
+        ? '検証OK。ただし具体度チェックで ' + result.depthFindings.length + ' 件の不足があります。STEP 9 の具体度チェックプロンプトで生成AIに修正させてください。'
+        : '検証OK。具体度チェックも通過しました。STEP 9 でドラフトを確認し、必要ならレビュー指摘から修正プロンプトを作成してください。';
       document.getElementById('revision-prompt').value = '';
       renderBuilder();
       document.getElementById('guide-review-panel').scrollIntoView({ behavior: 'smooth' });
@@ -1017,6 +1025,43 @@ const App = (function () {
       '<h4>' + escapeHtml(guide.title || '') + '</h4><p>' + escapeHtml(guide.goal || '') + '</p>' +
       listBlock('背景・既知事項', guide.assumptions) + listBlock('前提条件・必要な権限', guide.prerequisites) + listBlock('注意事項', guide.warnings) +
       '<h5>手順（' + (guide.steps || []).length + '件）</h5>' + stepsHtml;
+    renderDepthFindings(state.buildSession && state.buildSession.data ? state.buildSession.data.depthFindings || [] : []);
+  }
+
+  function renderDepthFindings(findings) {
+    document.getElementById('guide-depth-findings').innerHTML = (findings || []).length
+      ? '<div class="notice warning"><strong>具体度チェック: ' + findings.length + ' 件の不足</strong><ul>' + findings.map(function (item) { return '<li>' + escapeHtml(item) + '</li>'; }).join('') + '</ul></div>'
+      : '<div class="notice info">具体度チェック: 自動チェックで検出できる不足はありません。内容を読んで、実際に迷わず実行できる粒度か最終確認してください。</div>';
+  }
+
+  async function preparePlanRefinePrompt() {
+    try {
+      const currentPlan = document.getElementById('guide-plan').value.trim();
+      if (!currentPlan) throw new Error('生成AIの設計案を「生成AIの作業ガイド設計案」欄へ貼り付けてから深掘りしてください。');
+      const feedback = document.getElementById('plan-refine-feedback').value.trim();
+      const result = await call('prepareWorkGuidePlanRefinePrompt', state.buildSession.buildSessionId, currentPlan, feedback);
+      document.getElementById('guide-plan-prompt').value = result.prompt;
+      document.getElementById('guide-plan-confirm').checked = false;
+      document.getElementById('guide-prompt').value = '';
+      document.getElementById('guide-json-prompt-stage').classList.add('hidden');
+      document.getElementById('plan-refine-feedback').value = '';
+      state.buildSession.data.lastAiPlanPrompt = result.prompt;
+      state.buildSession.data.approvedGuidePlan = '';
+      state.buildSession.data.lastAiPrompt = '';
+      toast('深掘りプロンプト（' + result.refinementCount + '回目）を作成しました。コピーして生成AIへ渡し、改善版設計案を貼り直してください。');
+    } catch (error) { showError(error); }
+  }
+
+  async function prepareDepthCheckPrompt() {
+    try {
+      const result = await call('prepareWorkGuideDepthCheckPrompt', state.buildSession.buildSessionId);
+      document.getElementById('revision-prompt').value = result.prompt;
+      state.buildSession.data.depthFindings = result.findings || [];
+      state.buildSession.data.lastAiPrompt = result.prompt;
+      state.buildSession.data.lastAiPromptPhase = 'work_guide_depth_check';
+      renderDepthFindings(result.findings || []);
+      toast('具体度チェックプロンプトを作成しました。コピーして生成AIへ渡し、修正版JSONを STEP 8 へ貼り直してください。');
+    } catch (error) { showError(error); }
   }
 
   async function prepareRevisionPrompt() {
@@ -1551,6 +1596,7 @@ const App = (function () {
     selectMeeting: selectMeeting, prepareAnalysisJsonPrompt: prepareAnalysisJsonPrompt, validateAnalysis: validateAnalysis, saveAnalysis: saveAnalysis, openQuiz: openQuiz,
     answerSingle: answerSingle, continueSingle: continueSingle, submitBatchQuiz: submitBatchQuiz, submitCurrentQuiz: submitCurrentQuiz, retryCurrentQuiz: retryCurrentQuiz,
     loadActions: loadActions, startBuild: startBuild, reviseGuide: reviseGuide, cancelBuild: cancelBuild, searchSources: searchSources, prepareGuidePlanPrompt: prepareGuidePlanPrompt, prepareGuidePrompt: prepareGuidePrompt,
+    preparePlanRefinePrompt: preparePlanRefinePrompt, prepareDepthCheckPrompt: prepareDepthCheckPrompt,
     importGuide: importGuide, prepareRevisionPrompt: prepareRevisionPrompt, addGuideStep: addGuideStep, deleteGuideStep: deleteGuideStep, moveGuideStep: moveGuideStep,
     duplicateGuideStep: duplicateGuideStep, saveBuildDraft: saveBuildDraft, saveGuide: saveGuide, loadGuides: loadGuides,
     openGuideDetail: openGuideDetail, approveSelectedGuide: approveSelectedGuide, requestSelectedGuideRevision: requestSelectedGuideRevision, backToGuideList: backToGuideList, startExecution: startExecution, loadExecutions: loadExecutions, openExecution: openExecution,

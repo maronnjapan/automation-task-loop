@@ -152,6 +152,35 @@ function validateGuideSteps_(steps, snapshots, errors, options) {
   }
 }
 
+// 保存は妨げない品質チェック。抽象的な手順を検出して指摘文を返し、
+// 生成AIとの追加往復（具体度チェックプロンプト / 全自動の追加修正）の入力に使う。
+function assessWorkGuideDepth_(guide) {
+  const findings = [];
+  if (!isPlainObject_(guide)) return findings;
+  const depth = APP_CONFIG.workGuideDepth;
+  if (!Array.isArray(guide.prerequisites) || !guide.prerequisites.length) {
+    findings.push('前提条件が空です。必要な権限・プラン・アカウント・事前に準備する物を書いてください。');
+  }
+  if (!Array.isArray(guide.warnings) || !guide.warnings.length) {
+    findings.push('注意事項が空です。取り返しのつかない操作・課金・データ削除など、失敗すると困る点を書いてください。');
+  }
+  (Array.isArray(guide.steps) ? guide.steps : []).forEach(function (step) {
+    if (!isPlainObject_(step)) return;
+    const label = '手順' + (step.order || '?') + '「' + String(step.title || '').slice(0, 30) + '」';
+    const description = String(step.description || '');
+    if (description.replace(/\s+/g, '').length < depth.minDescriptionLength) {
+      findings.push(label + ': 説明が短く抽象的です。開く画面・選ぶメニューやボタンの名称・入力する値（形式と例）・失敗した場合の対処まで書いてください。');
+    }
+    if (step.type === 'input' && !nonEmptyString_(step.url) && !/https?:\/\//.test(description)) {
+      findings.push(label + ': 作業対象のURLがありません。開く画面が分かる場合はURLを設定し、不明なら説明に調べ方か【要確認】を書いてください。');
+    }
+    if (String(step.completionCriteria || '').replace(/\s+/g, '').length < depth.minCompletionCriteriaLength) {
+      findings.push(label + ': 完了確認が曖昧です。画面に表示される文言・返ってくる値・確認する操作など、客観的に判定できる内容にしてください。');
+    }
+  });
+  return findings;
+}
+
 function validateInputs_(inputs, path, errors) {
   if (!Array.isArray(inputs)) { errors.push(path + '.inputs は配列です。'); return; }
   const inputIds = {};

@@ -59,6 +59,13 @@ const APP_CONFIG = Object.freeze({
     openrouter: ''
   }),
   defaultAiMaxRepairAttempts: 1,
+  // 作業ガイドの具体度チェック。しきい値未満の手順は「抽象的すぎる」として指摘し、
+  // 生成AIとの追加往復（手動: 具体度チェックプロンプト / 全自動: 追加修正）を促す。
+  workGuideDepth: Object.freeze({
+    minDescriptionLength: 40,
+    minCompletionCriteriaLength: 16,
+    maxAutoRefinements: 2
+  }),
   automationTimeBudgetMs: 240000,
   managementSchemaVersion: '2026-07-ai-automation-v1'
 });
@@ -399,6 +406,30 @@ function automateActionGuide_(action) {
     });
     reviewedValue = reviewed.value;
     conversationId = generated.conversationId;
+    // 具体度チェック: 抽象的な手順が残る間は、上限回数まで生成AIへ追加修正を依頼する。
+    for (let depthRound = 1; depthRound <= APP_CONFIG.workGuideDepth.maxAutoRefinements; depthRound += 1) {
+      const depthFindings = assessWorkGuideDepth_(reviewedValue.workGuide);
+      if (!depthFindings.length) break;
+      const deepened = runAiJsonTask_({
+        prompt: buildWorkGuideDepthCheckPrompt_(reviewedValue.workGuide, depthFindings),
+        phase: 'work_guide_depth_refinement',
+        conversationId: conversationId,
+        meta: { meetingId: meeting.meetingId, actionId: action.actionId, buildSessionId: session.buildSessionId },
+        validator: function (guide) {
+          guide.workGuideId = '';
+          guide.version = 1;
+          guide.schemaVersion = APP_CONFIG.schemaVersion;
+          guide.sourceSnapshots = JSON.parse(JSON.stringify(data.selectedSources));
+          return validateWorkGuide_(guide);
+        }
+      });
+      reviewedValue.workGuide = deepened.value;
+      reviewedValue.review.changesMade = reviewedValue.review.changesMade.concat(['具体度チェック' + depthRound + '回目: ' + depthFindings.length + '件の不足を修正']);
+    }
+    const remainingDepthFindings = assessWorkGuideDepth_(reviewedValue.workGuide);
+    if (remainingDepthFindings.length) {
+      reviewedValue.review.remainingRisks = reviewedValue.review.remainingRisks.concat(remainingDepthFindings.map(function (item) { return '具体度チェック残: ' + item; }));
+    }
     data.importedWorkGuide = reviewedValue.workGuide;
     data.autoReview = reviewedValue.review;
     updateAutomaticWorkGuideBuild_(session.buildSessionId, 10, data);
@@ -471,6 +502,10 @@ function requestAiWorkGuideRevision(workGuideId, feedback) {
       meta: { meetingId: meeting.meetingId, actionId: action.actionId, workGuideId: workGuideId },
       validator: function (value) { return validateAutoReviewResult_(value, revised.value); }
     });
+    const remainingDepthFindings = assessWorkGuideDepth_(reviewed.value.workGuide);
+    if (remainingDepthFindings.length) {
+      reviewed.value.review.remainingRisks = reviewed.value.review.remainingRisks.concat(remainingDepthFindings.map(function (item) { return '具体度チェック残: ' + item; }));
+    }
     const saved = saveWorkGuide({
       requestToken: 'ai-revision-' + workGuideId + '-v' + expected.version + '-' + fingerprint_(feedback.trim()).slice(0, 16), confirmed: true, reviewRequired: true,
       generationMode: 'automatic_revision', autoReview: reviewed.value.review,
@@ -812,6 +847,20 @@ function buildMeetingAnalysisJsonPrompt_(meeting, transcript, approvedReview) {
   ].join('\n');
 }
 
+function workGuideQualityBar_() {
+  return [
+    '作業ガイドの品質基準（本番環境のセットアップ手順書と同じ水準。全手順がここへ達するまで具体化する）:',
+    '- 初めて作業する人が、他の資料を調べずに上から順に実行するだけで完了できる粒度まで分解する。1つの手順に複数の操作を詰め込まない。',
+    '- 手順ごとに、開く画面のURLと、画面内で選ぶメニュー・ボタン・リンク・タブの名称を画面の表記どおりに書く。',
+    '- 入力・設定する値は、形式・桁数・具体例まで書く（例: 「32文字の英数字のAccount ID」）。似た値と取り違えやすい場合は「〜ではない」と違いを明記する。',
+    '- 完了確認は、画面に表示される文言・返ってくる値・確認のための操作など、誰が見ても判定が一致する内容にする。「〜が完了していること」のような言い換えだけの完了確認は禁止。',
+    '- 失敗しやすい手順には、失敗した場合に何を確認し、どの手順からやり直すかを書く。',
+    '- 必要な権限・プラン・アカウント・事前に準備する物は前提条件へ、取り返しのつかない操作・課金・データ削除・秘密情報の扱いは注意事項へ漏らさず書く。',
+    '- 判断が必要な箇所は、選択肢と判断基準を書く。',
+    '- 根拠資料から分からない値や手順は推測で埋めず、「作業前に確認: …」という形で前提条件に残す。'
+  ].join('\n');
+}
+
 function buildWorkGuidePrompt_(context, approvedPlan) {
   return [
     'あなたは、他資料を探さずに最後まで実行できる作業ガイドを作ります。',
@@ -820,9 +869,12 @@ function buildWorkGuidePrompt_(context, approvedPlan) {
     'schemaVersion は 1.1。correctChoiceIndexes と同様、配列や型を厳密に守ってください。',
     '手順タイプは input または script のみです。表示専用手順は禁止です。',
     '各手順には具体的な description と completionCriteria が必須です。作業対象URLが分かる場合は必ず url に設定します。',
+    '各手順の description には、開く画面・選ぶメニューや押すボタンの名称・入力する値（形式と例）・失敗した場合の対処までを書き、completionCriteria には客観的に判定できる完了確認を書きます。',
     'script は allowedScripts にある scriptId だけ使用できます。不適切なら input にします。',
     'sourceReferences には selectedSources の fileId だけを指定します。',
-    approvedPlan ? '下記の「人が確認・修正したガイド設計案」を合意済みの方向性として優先し、目的と具体作業を忠実にJSON化してください。' : '',
+    approvedPlan ? '下記の「人が確認・修正したガイド設計案」を合意済みの方向性として優先し、目的と具体作業を忠実にJSON化してください。設計案に書かれたURL・画面名・入力値・失敗時の対処は省略せずJSONへ反映してください。' : '',
+    '',
+    workGuideQualityBar_(),
     '',
     '入力コンテキスト:',
     JSON.stringify(context, null, 2),
@@ -843,6 +895,10 @@ function buildWorkGuidePlanPrompt_(context) {
     'あなたは、作業ガイドを作る前に、人とガイドの目的・作業イメージを合わせるための設計案を作ります。',
     'この段階ではアプリ用JSONを作りません。JSON、コードブロック、機械向けのキー名は使わず、読みやすい日本語で返してください。',
     '根拠資料にない事実は推測せず、不明点は「作業前に確認すること」へ明記してください。',
+    '設計案は一度で完成させる必要はありません。このあと人と何度か往復して具体化するため、品質基準へ届かない箇所は「## 7. まだ具体化できていない点と質問」で人へ質問してください。',
+    '',
+    workGuideQualityBar_(),
+    '',
     '次の見出しをそのまま使ってください。',
     '',
     '# 作業ガイド設計案',
@@ -851,14 +907,35 @@ function buildWorkGuidePlanPrompt_(context) {
     '## 2. 完了した状態',
     '- 何を確認できれば作業完了かを客観的に書く。',
     '## 3. 必要な具体作業',
-    '- 実際に手を動かす順序で番号を付け、操作、入力、判断、確認を具体的に書く。',
-    '- 各作業について、その作業の完了をどう確認するかも書く。',
+    '- 実際に手を動かす順序で番号を付け、作業ごとに「開く画面とURL」「選ぶメニューや押すボタンの名称」「入力する値（形式と例）」「完了をどう確認するか」「失敗した場合の対処」を書く。',
+    '- 根拠資料から分からない箇所は推測せず、その作業の中に【要確認】と明記する。',
     '## 4. 作業前に確認すること',
     '- 権限、対象、期限、必要資料、不明点、承認の要否を列挙する。',
     '## 5. 注意点・失敗しやすい点',
     '- 取り返しのつかない操作、誤解しやすい判断、残存リスクを書く。',
     '## 6. 今回のガイドに含めないこと',
     '- 別作業とすべき範囲や、根拠不足で扱えない範囲を書く。',
+    '## 7. まだ具体化できていない点と質問',
+    '- 品質基準に達していない作業と、達するために人へ聞きたいことを番号付きで書く。無ければ「なし」と書く。',
+    '',
+    '入力コンテキスト:',
+    JSON.stringify(context, null, 2)
+  ].join('\n');
+}
+
+function buildWorkGuidePlanRefinePrompt_(context, currentPlan, feedback) {
+  return [
+    'あなたは、作業ガイド設計案を品質基準に達するまで人と往復しながら具体化する編集者です。',
+    '下記の「現在の設計案」を品質基準と照合し、抽象的なままの作業をすべて具体化した改善版設計案を返してください。',
+    'この段階ではアプリ用JSONを作りません。JSON、コードブロック、機械向けのキー名は使わず、読みやすい日本語で返してください。',
+    '根拠資料と人からの回答にない事実は推測せず、分からない箇所は【要確認】として残し、「## 7. まだ具体化できていない点と質問」で人へ質問してください。',
+    '出力は現在の設計案と同じ見出し構成（# 作業ガイド設計案、## 1〜## 7）の全文とし、差分だけを返さないでください。',
+    '',
+    workGuideQualityBar_(),
+    feedback ? '\n人からの回答・追加情報・指摘（最優先で反映する）:\n' + feedback : '',
+    '',
+    '現在の設計案:',
+    currentPlan,
     '',
     '入力コンテキスト:',
     JSON.stringify(context, null, 2)
@@ -871,15 +948,36 @@ function buildWorkGuideRevisionPrompt_(guide, feedback) {
     '次の制約を厳守してください。',
     '- 出力は修正後の作業ガイド JSON オブジェクト全体のみを ```json コードブロックで囲んで返す。コードブロックの前後に説明文を書かない。',
     '- schemaVersion / workGuideId / version は現在のドラフトの値を変更しない。',
-    '- レビュー指摘に関係しない箇所は不要に変更しない。',
-    '- 手順タイプは input または script のみ。各手順の description と completionCriteria は必須。',
+    '- レビュー指摘の修正に加えて、下記の品質基準に達していない手順があれば同時に具体化する。それ以外の箇所は不要に変更しない。',
+    '- 手順タイプは input または script のみ。各手順の description と completionCriteria は必須。手順を分割した場合は stepId を重複させず、order を1からの連番に振り直す。',
     '- sourceReferences には sourceSnapshots にある fileId だけを指定する。',
+    '',
+    workGuideQualityBar_(),
     '',
     '現在のドラフト:',
     JSON.stringify(guide, null, 2),
     '',
     'レビュー指摘:',
     feedback
+  ].join('\n');
+}
+
+function buildWorkGuideDepthCheckPrompt_(guide, findings) {
+  return [
+    'あなたは、作業ガイドJSONのドラフトが品質基準に達しているかを点検し、不足を修正する検収者です。',
+    '各手順を品質基準と照合し、抽象的な手順の分割、description への画面・操作・入力値・失敗時対処の追記、completionCriteria の客観化を行った修正版を返してください。',
+    '次の制約を厳守してください。',
+    '- 出力は修正後の作業ガイド JSON オブジェクト全体のみを ```json コードブロックで囲んで返す。コードブロックの前後に説明文を書かない。',
+    '- schemaVersion / workGuideId / version / sourceSnapshots は現在のドラフトの値を変更しない。',
+    '- 手順タイプは input または script のみ。手順を分割した場合は stepId を重複させず、order を1からの連番に振り直す。',
+    '- sourceReferences には sourceSnapshots にある fileId だけを指定する。',
+    '- 根拠のない事実を追加しない。分からない値は「作業前に確認: …」として prerequisites へ追加し、該当手順の description にも【要確認】と書く。',
+    '',
+    workGuideQualityBar_(),
+    findings && findings.length ? '\nアプリの自動チェックで見つかった不足（すべて解消するか、解消できない理由を prerequisites へ残す）:\n' + findings.map(function (item, index) { return (index + 1) + '. ' + item; }).join('\n') : '',
+    '',
+    '現在のドラフト:',
+    JSON.stringify(guide, null, 2)
   ].join('\n');
 }
 
@@ -892,6 +990,8 @@ function buildWorkGuideAutoReviewPrompt_(context, guide) {
     '- 他資料を探さず、各手順を上から実行するだけで完了できる粒度へ修正する。',
     '- script 手順は allowedScripts に存在するIDだけを使用する。任意コードは生成しない。',
     '- workGuideId / version / schemaVersion / sourceSnapshots は初稿から変更しない。',
+    '',
+    workGuideQualityBar_(),
     '',
     '根拠コンテキスト:',
     JSON.stringify(context, null, 2),
@@ -1963,6 +2063,35 @@ function validateGuideSteps_(steps, snapshots, errors, options) {
   }
 }
 
+// 保存は妨げない品質チェック。抽象的な手順を検出して指摘文を返し、
+// 生成AIとの追加往復（具体度チェックプロンプト / 全自動の追加修正）の入力に使う。
+function assessWorkGuideDepth_(guide) {
+  const findings = [];
+  if (!isPlainObject_(guide)) return findings;
+  const depth = APP_CONFIG.workGuideDepth;
+  if (!Array.isArray(guide.prerequisites) || !guide.prerequisites.length) {
+    findings.push('前提条件が空です。必要な権限・プラン・アカウント・事前に準備する物を書いてください。');
+  }
+  if (!Array.isArray(guide.warnings) || !guide.warnings.length) {
+    findings.push('注意事項が空です。取り返しのつかない操作・課金・データ削除など、失敗すると困る点を書いてください。');
+  }
+  (Array.isArray(guide.steps) ? guide.steps : []).forEach(function (step) {
+    if (!isPlainObject_(step)) return;
+    const label = '手順' + (step.order || '?') + '「' + String(step.title || '').slice(0, 30) + '」';
+    const description = String(step.description || '');
+    if (description.replace(/\s+/g, '').length < depth.minDescriptionLength) {
+      findings.push(label + ': 説明が短く抽象的です。開く画面・選ぶメニューやボタンの名称・入力する値（形式と例）・失敗した場合の対処まで書いてください。');
+    }
+    if (step.type === 'input' && !nonEmptyString_(step.url) && !/https?:\/\//.test(description)) {
+      findings.push(label + ': 作業対象のURLがありません。開く画面が分かる場合はURLを設定し、不明なら説明に調べ方か【要確認】を書いてください。');
+    }
+    if (String(step.completionCriteria || '').replace(/\s+/g, '').length < depth.minCompletionCriteriaLength) {
+      findings.push(label + ': 完了確認が曖昧です。画面に表示される文言・返ってくる値・確認する操作など、客観的に判定できる内容にしてください。');
+    }
+  });
+  return findings;
+}
+
 function validateInputs_(inputs, path, errors) {
   if (!Array.isArray(inputs)) { errors.push(path + '.inputs は配列です。'); return; }
   const inputIds = {};
@@ -2908,6 +3037,30 @@ function prepareWorkGuidePlanPrompt(buildSessionId, fileIds, knownPrerequisites,
   });
 }
 
+function prepareWorkGuidePlanRefinePrompt(buildSessionId, currentPlan, feedback) {
+  return withClientError_(function () {
+    const session = requireOpenBuildSession_(buildSessionId);
+    requirePassedQuizForMeeting_(session.meetingId);
+    const data = parseJsonCell_(session.dataJson, {});
+    assertApp_(nonEmptyString_(data.lastAiPlanPrompt), 'GUIDE_PLAN_REQUIRED', '先に設計案プロンプトを作成し、生成AIの設計案を取得してください。');
+    assertApp_(nonEmptyString_(currentPlan), 'VALIDATION_ERROR', '生成AIの設計案を貼り付けてから深掘りしてください。');
+    const normalizedPlan = currentPlan.trim();
+    assertApp_(normalizedPlan.length <= 50000, 'VALIDATION_ERROR', '設計案は50,000文字以内にしてください。');
+    const note = nonEmptyString_(feedback) ? feedback.trim() : '';
+    assertApp_(note.length <= 10000, 'VALIDATION_ERROR', '回答・指摘は10,000文字以内にしてください。');
+    // 深掘りの各往復も監査履歴に残す。直前のプロンプトと、それに対するAIの設計案を1往復として記録する。
+    recordManualAiInteraction_({ meetingId: session.meetingId, actionId: session.actionId, buildSessionId: session.buildSessionId, phase: 'work_guide_plan_refinement' }, data.lastAiPlanPrompt, normalizedPlan, { valid: true, errors: [] });
+    const prepared = prepareWorkGuideContext_(data, (data.selectedSources || []).map(function (source) { return source.fileId; }), data.knownPrerequisites, data.prerequisiteAnswers);
+    data.planRefinements = (Array.isArray(data.planRefinements) ? data.planRefinements : []).concat([{ feedback: note, createdAt: nowIso_() }]);
+    data.lastAiPlanPrompt = buildWorkGuidePlanRefinePrompt_(prepared.context, normalizedPlan, note);
+    data.approvedGuidePlan = '';
+    data.lastAiPrompt = '';
+    data.lastAiPromptPhase = '';
+    updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: 7, dataJson: data, updatedAt: nowIso_() });
+    return { success: true, prompt: data.lastAiPlanPrompt, refinementCount: data.planRefinements.length };
+  });
+}
+
 function prepareWorkGuidePrompt(buildSessionId, fileIds, knownPrerequisites, prerequisiteAnswers, approvedPlan, confirmed) {
   return withClientError_(function () {
     const session = requireOpenBuildSession_(buildSessionId);
@@ -2965,13 +3118,29 @@ function importWorkGuideToBuild(buildSessionId, rawText) {
     if (!guide.sourceSnapshots || !guide.sourceSnapshots.length) guide.sourceSnapshots = data.selectedSources || [];
     validateWorkGuide_(guide);
     data.importedWorkGuide = guide;
+    data.depthFindings = assessWorkGuideDepth_(guide);
     if (nonEmptyString_(data.lastAiPrompt)) {
       recordManualAiInteraction_({ meetingId: session.meetingId, actionId: session.actionId, buildSessionId: session.buildSessionId, phase: data.lastAiPromptPhase || 'work_guide_generation' }, data.lastAiPrompt, rawText, { valid: true, errors: [] });
       data.lastAiPrompt = '';
       data.lastAiPromptPhase = '';
     }
     updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: 9, dataJson: data, updatedAt: nowIso_() });
-    return { success: true, workGuide: guide };
+    return { success: true, workGuide: guide, depthFindings: data.depthFindings };
+  });
+}
+
+function prepareWorkGuideDepthCheckPrompt(buildSessionId) {
+  return withClientError_(function () {
+    const session = requireOpenBuildSession_(buildSessionId);
+    requirePassedQuizForMeeting_(session.meetingId);
+    const data = parseJsonCell_(session.dataJson, {});
+    assertApp_(isPlainObject_(data.importedWorkGuide), 'DRAFT_NOT_FOUND', '先に STEP 8 で作業ガイドJSONを取り込んでください。');
+    const findings = assessWorkGuideDepth_(data.importedWorkGuide);
+    data.depthFindings = findings;
+    data.lastAiPrompt = buildWorkGuideDepthCheckPrompt_(data.importedWorkGuide, findings);
+    data.lastAiPromptPhase = 'work_guide_depth_check';
+    updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: 9, dataJson: data, updatedAt: nowIso_() });
+    return { success: true, prompt: data.lastAiPrompt, findings: findings };
   });
 }
 

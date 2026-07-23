@@ -70,6 +70,20 @@ function buildMeetingAnalysisJsonPrompt_(meeting, transcript, approvedReview) {
   ].join('\n');
 }
 
+function workGuideQualityBar_() {
+  return [
+    '作業ガイドの品質基準（本番環境のセットアップ手順書と同じ水準。全手順がここへ達するまで具体化する）:',
+    '- 初めて作業する人が、他の資料を調べずに上から順に実行するだけで完了できる粒度まで分解する。1つの手順に複数の操作を詰め込まない。',
+    '- 手順ごとに、開く画面のURLと、画面内で選ぶメニュー・ボタン・リンク・タブの名称を画面の表記どおりに書く。',
+    '- 入力・設定する値は、形式・桁数・具体例まで書く（例: 「32文字の英数字のAccount ID」）。似た値と取り違えやすい場合は「〜ではない」と違いを明記する。',
+    '- 完了確認は、画面に表示される文言・返ってくる値・確認のための操作など、誰が見ても判定が一致する内容にする。「〜が完了していること」のような言い換えだけの完了確認は禁止。',
+    '- 失敗しやすい手順には、失敗した場合に何を確認し、どの手順からやり直すかを書く。',
+    '- 必要な権限・プラン・アカウント・事前に準備する物は前提条件へ、取り返しのつかない操作・課金・データ削除・秘密情報の扱いは注意事項へ漏らさず書く。',
+    '- 判断が必要な箇所は、選択肢と判断基準を書く。',
+    '- 根拠資料から分からない値や手順は推測で埋めず、「作業前に確認: …」という形で前提条件に残す。'
+  ].join('\n');
+}
+
 function buildWorkGuidePrompt_(context, approvedPlan) {
   return [
     'あなたは、他資料を探さずに最後まで実行できる作業ガイドを作ります。',
@@ -78,9 +92,12 @@ function buildWorkGuidePrompt_(context, approvedPlan) {
     'schemaVersion は 1.1。correctChoiceIndexes と同様、配列や型を厳密に守ってください。',
     '手順タイプは input または script のみです。表示専用手順は禁止です。',
     '各手順には具体的な description と completionCriteria が必須です。作業対象URLが分かる場合は必ず url に設定します。',
+    '各手順の description には、開く画面・選ぶメニューや押すボタンの名称・入力する値（形式と例）・失敗した場合の対処までを書き、completionCriteria には客観的に判定できる完了確認を書きます。',
     'script は allowedScripts にある scriptId だけ使用できます。不適切なら input にします。',
     'sourceReferences には selectedSources の fileId だけを指定します。',
-    approvedPlan ? '下記の「人が確認・修正したガイド設計案」を合意済みの方向性として優先し、目的と具体作業を忠実にJSON化してください。' : '',
+    approvedPlan ? '下記の「人が確認・修正したガイド設計案」を合意済みの方向性として優先し、目的と具体作業を忠実にJSON化してください。設計案に書かれたURL・画面名・入力値・失敗時の対処は省略せずJSONへ反映してください。' : '',
+    '',
+    workGuideQualityBar_(),
     '',
     '入力コンテキスト:',
     JSON.stringify(context, null, 2),
@@ -101,6 +118,10 @@ function buildWorkGuidePlanPrompt_(context) {
     'あなたは、作業ガイドを作る前に、人とガイドの目的・作業イメージを合わせるための設計案を作ります。',
     'この段階ではアプリ用JSONを作りません。JSON、コードブロック、機械向けのキー名は使わず、読みやすい日本語で返してください。',
     '根拠資料にない事実は推測せず、不明点は「作業前に確認すること」へ明記してください。',
+    '設計案は一度で完成させる必要はありません。このあと人と何度か往復して具体化するため、品質基準へ届かない箇所は「## 7. まだ具体化できていない点と質問」で人へ質問してください。',
+    '',
+    workGuideQualityBar_(),
+    '',
     '次の見出しをそのまま使ってください。',
     '',
     '# 作業ガイド設計案',
@@ -109,14 +130,35 @@ function buildWorkGuidePlanPrompt_(context) {
     '## 2. 完了した状態',
     '- 何を確認できれば作業完了かを客観的に書く。',
     '## 3. 必要な具体作業',
-    '- 実際に手を動かす順序で番号を付け、操作、入力、判断、確認を具体的に書く。',
-    '- 各作業について、その作業の完了をどう確認するかも書く。',
+    '- 実際に手を動かす順序で番号を付け、作業ごとに「開く画面とURL」「選ぶメニューや押すボタンの名称」「入力する値（形式と例）」「完了をどう確認するか」「失敗した場合の対処」を書く。',
+    '- 根拠資料から分からない箇所は推測せず、その作業の中に【要確認】と明記する。',
     '## 4. 作業前に確認すること',
     '- 権限、対象、期限、必要資料、不明点、承認の要否を列挙する。',
     '## 5. 注意点・失敗しやすい点',
     '- 取り返しのつかない操作、誤解しやすい判断、残存リスクを書く。',
     '## 6. 今回のガイドに含めないこと',
     '- 別作業とすべき範囲や、根拠不足で扱えない範囲を書く。',
+    '## 7. まだ具体化できていない点と質問',
+    '- 品質基準に達していない作業と、達するために人へ聞きたいことを番号付きで書く。無ければ「なし」と書く。',
+    '',
+    '入力コンテキスト:',
+    JSON.stringify(context, null, 2)
+  ].join('\n');
+}
+
+function buildWorkGuidePlanRefinePrompt_(context, currentPlan, feedback) {
+  return [
+    'あなたは、作業ガイド設計案を品質基準に達するまで人と往復しながら具体化する編集者です。',
+    '下記の「現在の設計案」を品質基準と照合し、抽象的なままの作業をすべて具体化した改善版設計案を返してください。',
+    'この段階ではアプリ用JSONを作りません。JSON、コードブロック、機械向けのキー名は使わず、読みやすい日本語で返してください。',
+    '根拠資料と人からの回答にない事実は推測せず、分からない箇所は【要確認】として残し、「## 7. まだ具体化できていない点と質問」で人へ質問してください。',
+    '出力は現在の設計案と同じ見出し構成（# 作業ガイド設計案、## 1〜## 7）の全文とし、差分だけを返さないでください。',
+    '',
+    workGuideQualityBar_(),
+    feedback ? '\n人からの回答・追加情報・指摘（最優先で反映する）:\n' + feedback : '',
+    '',
+    '現在の設計案:',
+    currentPlan,
     '',
     '入力コンテキスト:',
     JSON.stringify(context, null, 2)
@@ -129,15 +171,36 @@ function buildWorkGuideRevisionPrompt_(guide, feedback) {
     '次の制約を厳守してください。',
     '- 出力は修正後の作業ガイド JSON オブジェクト全体のみを ```json コードブロックで囲んで返す。コードブロックの前後に説明文を書かない。',
     '- schemaVersion / workGuideId / version は現在のドラフトの値を変更しない。',
-    '- レビュー指摘に関係しない箇所は不要に変更しない。',
-    '- 手順タイプは input または script のみ。各手順の description と completionCriteria は必須。',
+    '- レビュー指摘の修正に加えて、下記の品質基準に達していない手順があれば同時に具体化する。それ以外の箇所は不要に変更しない。',
+    '- 手順タイプは input または script のみ。各手順の description と completionCriteria は必須。手順を分割した場合は stepId を重複させず、order を1からの連番に振り直す。',
     '- sourceReferences には sourceSnapshots にある fileId だけを指定する。',
+    '',
+    workGuideQualityBar_(),
     '',
     '現在のドラフト:',
     JSON.stringify(guide, null, 2),
     '',
     'レビュー指摘:',
     feedback
+  ].join('\n');
+}
+
+function buildWorkGuideDepthCheckPrompt_(guide, findings) {
+  return [
+    'あなたは、作業ガイドJSONのドラフトが品質基準に達しているかを点検し、不足を修正する検収者です。',
+    '各手順を品質基準と照合し、抽象的な手順の分割、description への画面・操作・入力値・失敗時対処の追記、completionCriteria の客観化を行った修正版を返してください。',
+    '次の制約を厳守してください。',
+    '- 出力は修正後の作業ガイド JSON オブジェクト全体のみを ```json コードブロックで囲んで返す。コードブロックの前後に説明文を書かない。',
+    '- schemaVersion / workGuideId / version / sourceSnapshots は現在のドラフトの値を変更しない。',
+    '- 手順タイプは input または script のみ。手順を分割した場合は stepId を重複させず、order を1からの連番に振り直す。',
+    '- sourceReferences には sourceSnapshots にある fileId だけを指定する。',
+    '- 根拠のない事実を追加しない。分からない値は「作業前に確認: …」として prerequisites へ追加し、該当手順の description にも【要確認】と書く。',
+    '',
+    workGuideQualityBar_(),
+    findings && findings.length ? '\nアプリの自動チェックで見つかった不足（すべて解消するか、解消できない理由を prerequisites へ残す）:\n' + findings.map(function (item, index) { return (index + 1) + '. ' + item; }).join('\n') : '',
+    '',
+    '現在のドラフト:',
+    JSON.stringify(guide, null, 2)
   ].join('\n');
 }
 
@@ -150,6 +213,8 @@ function buildWorkGuideAutoReviewPrompt_(context, guide) {
     '- 他資料を探さず、各手順を上から実行するだけで完了できる粒度へ修正する。',
     '- script 手順は allowedScripts に存在するIDだけを使用する。任意コードは生成しない。',
     '- workGuideId / version / schemaVersion / sourceSnapshots は初稿から変更しない。',
+    '',
+    workGuideQualityBar_(),
     '',
     '根拠コンテキスト:',
     JSON.stringify(context, null, 2),

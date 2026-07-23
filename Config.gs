@@ -55,6 +55,13 @@ const APP_CONFIG = Object.freeze({
     openrouter: ''
   }),
   defaultAiMaxRepairAttempts: 1,
+  // 作業ガイドの具体度チェック。しきい値未満の手順は「抽象的すぎる」として指摘し、
+  // 生成AIとの追加往復（手動: 具体度チェックプロンプト / 全自動: 追加修正）を促す。
+  workGuideDepth: Object.freeze({
+    minDescriptionLength: 40,
+    minCompletionCriteriaLength: 16,
+    maxAutoRefinements: 2
+  }),
   automationTimeBudgetMs: 240000,
   managementSchemaVersion: '2026-07-ai-automation-v1'
 });

@@ -469,6 +469,8 @@ const App = (function () {
   function resetBuilderForm() {
     document.getElementById('guide-plan-prompt').value = '';
     document.getElementById('guide-plan').value = '';
+    document.getElementById('plan-refine-feedback').value = '';
+    document.getElementById('guide-depth-findings').innerHTML = '';
     document.getElementById('guide-plan-confirm').checked = false;
     document.getElementById('guide-prompt').value = '';
     document.getElementById('guide-json-prompt-stage').classList.add('hidden');
@@ -510,7 +512,7 @@ const App = (function () {
       document.getElementById('guide-plan-confirm').checked = true;
     }
     if (session.data.lastAiPrompt) {
-      const promptField = session.data.lastAiPromptPhase === 'work_guide_revision' ? 'revision-prompt' : 'guide-prompt';
+      const promptField = ['work_guide_revision', 'work_guide_depth_check'].indexOf(session.data.lastAiPromptPhase) >= 0 ? 'revision-prompt' : 'guide-prompt';
       document.getElementById(promptField).value = session.data.lastAiPrompt;
       if (session.data.lastAiPromptPhase === 'work_guide_generation') document.getElementById('guide-json-prompt-stage').classList.remove('hidden');
     }
@@ -609,9 +611,12 @@ const App = (function () {
       state.editGuide = result.workGuide;
       state.saveRequestToken = '';
       state.buildSession.data.importedWorkGuide = result.workGuide;
+      state.buildSession.data.depthFindings = result.depthFindings || [];
       state.buildSession.currentStep = 9;
       box.className = 'validation-box success';
-      box.textContent = '検証OK。STEP 9 でドラフトを確認し、必要ならレビュー指摘から修正プロンプトを作成してください。';
+      box.textContent = (result.depthFindings || []).length
+        ? '検証OK。ただし具体度チェックで ' + result.depthFindings.length + ' 件の不足があります。STEP 9 の具体度チェックプロンプトで生成AIに修正させてください。'
+        : '検証OK。具体度チェックも通過しました。STEP 9 でドラフトを確認し、必要ならレビュー指摘から修正プロンプトを作成してください。';
       document.getElementById('revision-prompt').value = '';
       renderBuilder();
       document.getElementById('guide-review-panel').scrollIntoView({ behavior: 'smooth' });
@@ -636,6 +641,43 @@ const App = (function () {
       '<h4>' + escapeHtml(guide.title || '') + '</h4><p>' + escapeHtml(guide.goal || '') + '</p>' +
       listBlock('背景・既知事項', guide.assumptions) + listBlock('前提条件・必要な権限', guide.prerequisites) + listBlock('注意事項', guide.warnings) +
       '<h5>手順（' + (guide.steps || []).length + '件）</h5>' + stepsHtml;
+    renderDepthFindings(state.buildSession && state.buildSession.data ? state.buildSession.data.depthFindings || [] : []);
+  }
+
+  function renderDepthFindings(findings) {
+    document.getElementById('guide-depth-findings').innerHTML = (findings || []).length
+      ? '<div class="notice warning"><strong>具体度チェック: ' + findings.length + ' 件の不足</strong><ul>' + findings.map(function (item) { return '<li>' + escapeHtml(item) + '</li>'; }).join('') + '</ul></div>'
+      : '<div class="notice info">具体度チェック: 自動チェックで検出できる不足はありません。内容を読んで、実際に迷わず実行できる粒度か最終確認してください。</div>';
+  }
+
+  async function preparePlanRefinePrompt() {
+    try {
+      const currentPlan = document.getElementById('guide-plan').value.trim();
+      if (!currentPlan) throw new Error('生成AIの設計案を「生成AIの作業ガイド設計案」欄へ貼り付けてから深掘りしてください。');
+      const feedback = document.getElementById('plan-refine-feedback').value.trim();
+      const result = await call('prepareWorkGuidePlanRefinePrompt', state.buildSession.buildSessionId, currentPlan, feedback);
+      document.getElementById('guide-plan-prompt').value = result.prompt;
+      document.getElementById('guide-plan-confirm').checked = false;
+      document.getElementById('guide-prompt').value = '';
+      document.getElementById('guide-json-prompt-stage').classList.add('hidden');
+      document.getElementById('plan-refine-feedback').value = '';
+      state.buildSession.data.lastAiPlanPrompt = result.prompt;
+      state.buildSession.data.approvedGuidePlan = '';
+      state.buildSession.data.lastAiPrompt = '';
+      toast('深掘りプロンプト（' + result.refinementCount + '回目）を作成しました。コピーして生成AIへ渡し、改善版設計案を貼り直してください。');
+    } catch (error) { showError(error); }
+  }
+
+  async function prepareDepthCheckPrompt() {
+    try {
+      const result = await call('prepareWorkGuideDepthCheckPrompt', state.buildSession.buildSessionId);
+      document.getElementById('revision-prompt').value = result.prompt;
+      state.buildSession.data.depthFindings = result.findings || [];
+      state.buildSession.data.lastAiPrompt = result.prompt;
+      state.buildSession.data.lastAiPromptPhase = 'work_guide_depth_check';
+      renderDepthFindings(result.findings || []);
+      toast('具体度チェックプロンプトを作成しました。コピーして生成AIへ渡し、修正版JSONを STEP 8 へ貼り直してください。');
+    } catch (error) { showError(error); }
   }
 
   async function prepareRevisionPrompt() {
@@ -1170,6 +1212,7 @@ const App = (function () {
     selectMeeting: selectMeeting, prepareAnalysisJsonPrompt: prepareAnalysisJsonPrompt, validateAnalysis: validateAnalysis, saveAnalysis: saveAnalysis, openQuiz: openQuiz,
     answerSingle: answerSingle, continueSingle: continueSingle, submitBatchQuiz: submitBatchQuiz, submitCurrentQuiz: submitCurrentQuiz, retryCurrentQuiz: retryCurrentQuiz,
     loadActions: loadActions, startBuild: startBuild, reviseGuide: reviseGuide, cancelBuild: cancelBuild, searchSources: searchSources, prepareGuidePlanPrompt: prepareGuidePlanPrompt, prepareGuidePrompt: prepareGuidePrompt,
+    preparePlanRefinePrompt: preparePlanRefinePrompt, prepareDepthCheckPrompt: prepareDepthCheckPrompt,
     importGuide: importGuide, prepareRevisionPrompt: prepareRevisionPrompt, addGuideStep: addGuideStep, deleteGuideStep: deleteGuideStep, moveGuideStep: moveGuideStep,
     duplicateGuideStep: duplicateGuideStep, saveBuildDraft: saveBuildDraft, saveGuide: saveGuide, loadGuides: loadGuides,
     openGuideDetail: openGuideDetail, approveSelectedGuide: approveSelectedGuide, requestSelectedGuideRevision: requestSelectedGuideRevision, backToGuideList: backToGuideList, startExecution: startExecution, loadExecutions: loadExecutions, openExecution: openExecution,

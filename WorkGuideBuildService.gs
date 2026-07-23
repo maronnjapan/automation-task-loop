@@ -105,6 +105,30 @@ function prepareWorkGuidePlanPrompt(buildSessionId, fileIds, knownPrerequisites,
   });
 }
 
+function prepareWorkGuidePlanRefinePrompt(buildSessionId, currentPlan, feedback) {
+  return withClientError_(function () {
+    const session = requireOpenBuildSession_(buildSessionId);
+    requirePassedQuizForMeeting_(session.meetingId);
+    const data = parseJsonCell_(session.dataJson, {});
+    assertApp_(nonEmptyString_(data.lastAiPlanPrompt), 'GUIDE_PLAN_REQUIRED', '先に設計案プロンプトを作成し、生成AIの設計案を取得してください。');
+    assertApp_(nonEmptyString_(currentPlan), 'VALIDATION_ERROR', '生成AIの設計案を貼り付けてから深掘りしてください。');
+    const normalizedPlan = currentPlan.trim();
+    assertApp_(normalizedPlan.length <= 50000, 'VALIDATION_ERROR', '設計案は50,000文字以内にしてください。');
+    const note = nonEmptyString_(feedback) ? feedback.trim() : '';
+    assertApp_(note.length <= 10000, 'VALIDATION_ERROR', '回答・指摘は10,000文字以内にしてください。');
+    // 深掘りの各往復も監査履歴に残す。直前のプロンプトと、それに対するAIの設計案を1往復として記録する。
+    recordManualAiInteraction_({ meetingId: session.meetingId, actionId: session.actionId, buildSessionId: session.buildSessionId, phase: 'work_guide_plan_refinement' }, data.lastAiPlanPrompt, normalizedPlan, { valid: true, errors: [] });
+    const prepared = prepareWorkGuideContext_(data, (data.selectedSources || []).map(function (source) { return source.fileId; }), data.knownPrerequisites, data.prerequisiteAnswers);
+    data.planRefinements = (Array.isArray(data.planRefinements) ? data.planRefinements : []).concat([{ feedback: note, createdAt: nowIso_() }]);
+    data.lastAiPlanPrompt = buildWorkGuidePlanRefinePrompt_(prepared.context, normalizedPlan, note);
+    data.approvedGuidePlan = '';
+    data.lastAiPrompt = '';
+    data.lastAiPromptPhase = '';
+    updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: 7, dataJson: data, updatedAt: nowIso_() });
+    return { success: true, prompt: data.lastAiPlanPrompt, refinementCount: data.planRefinements.length };
+  });
+}
+
 function prepareWorkGuidePrompt(buildSessionId, fileIds, knownPrerequisites, prerequisiteAnswers, approvedPlan, confirmed) {
   return withClientError_(function () {
     const session = requireOpenBuildSession_(buildSessionId);
@@ -162,13 +186,29 @@ function importWorkGuideToBuild(buildSessionId, rawText) {
     if (!guide.sourceSnapshots || !guide.sourceSnapshots.length) guide.sourceSnapshots = data.selectedSources || [];
     validateWorkGuide_(guide);
     data.importedWorkGuide = guide;
+    data.depthFindings = assessWorkGuideDepth_(guide);
     if (nonEmptyString_(data.lastAiPrompt)) {
       recordManualAiInteraction_({ meetingId: session.meetingId, actionId: session.actionId, buildSessionId: session.buildSessionId, phase: data.lastAiPromptPhase || 'work_guide_generation' }, data.lastAiPrompt, rawText, { valid: true, errors: [] });
       data.lastAiPrompt = '';
       data.lastAiPromptPhase = '';
     }
     updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: 9, dataJson: data, updatedAt: nowIso_() });
-    return { success: true, workGuide: guide };
+    return { success: true, workGuide: guide, depthFindings: data.depthFindings };
+  });
+}
+
+function prepareWorkGuideDepthCheckPrompt(buildSessionId) {
+  return withClientError_(function () {
+    const session = requireOpenBuildSession_(buildSessionId);
+    requirePassedQuizForMeeting_(session.meetingId);
+    const data = parseJsonCell_(session.dataJson, {});
+    assertApp_(isPlainObject_(data.importedWorkGuide), 'DRAFT_NOT_FOUND', '先に STEP 8 で作業ガイドJSONを取り込んでください。');
+    const findings = assessWorkGuideDepth_(data.importedWorkGuide);
+    data.depthFindings = findings;
+    data.lastAiPrompt = buildWorkGuideDepthCheckPrompt_(data.importedWorkGuide, findings);
+    data.lastAiPromptPhase = 'work_guide_depth_check';
+    updateRow_('WorkGuideBuildSessions', session._rowNumber, { currentStep: 9, dataJson: data, updatedAt: nowIso_() });
+    return { success: true, prompt: data.lastAiPrompt, findings: findings };
   });
 }
 

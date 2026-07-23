@@ -86,6 +86,20 @@ assert.equal(vm.runInContext('buildMeetingAnalysisReviewPrompt_(promptMeeting, "
 assert.equal(vm.runInContext('buildMeetingAnalysisJsonPrompt_(promptMeeting, "文字起こし", approvedMeetingReview).includes(approvedMeetingReview)', context), true);
 assert.equal(vm.runInContext('buildWorkGuidePlanPrompt_({action:{title:"公開準備"}}).includes("必要な具体作業")', context), true);
 assert.equal(vm.runInContext('buildWorkGuidePrompt_({action:{title:"公開準備"}, selectedSources:[], workGuideId:"", version:1}, approvedGuidePlan).includes(approvedGuidePlan)', context), true);
+assert.equal(vm.runInContext('buildWorkGuidePlanPrompt_({action:{title:"公開準備"}}).includes("作業ガイドの品質基準")', context), true, 'Plan prompts must demand setup-script level concreteness');
+assert.equal(vm.runInContext('buildWorkGuidePlanPrompt_({action:{title:"公開準備"}}).includes("まだ具体化できていない点と質問")', context), true, 'Plan prompts must surface open questions for the human loop');
+assert.equal(vm.runInContext('buildWorkGuidePlanRefinePrompt_({action:{title:"公開準備"}}, approvedGuidePlan, "手順3のURLを追記").includes(approvedGuidePlan)', context), true, 'Refine prompts must carry the current plan');
+assert.equal(vm.runInContext('buildWorkGuidePlanRefinePrompt_({action:{title:"公開準備"}}, approvedGuidePlan, "手順3のURLを追記").includes("手順3のURLを追記")', context), true, 'Refine prompts must carry the human feedback');
+assert.equal(vm.runInContext('buildWorkGuidePrompt_({action:{title:"公開準備"}, selectedSources:[], workGuideId:"", version:1}, approvedGuidePlan).includes("作業ガイドの品質基準")', context), true);
+assert.equal(vm.runInContext('buildWorkGuideRevisionPrompt_(validGuide, "指摘").includes("作業ガイドの品質基準")', context), true);
+const deepGuide = structuredClone(validGuide);
+deepGuide.warnings = ['公開の取り消しはできないため、保存前にプレビューで最終確認する'];
+deepGuide.steps[0].description = 'https://example.com/item を開き、右上の「編集」ボタンを押して公開内容を表示する。誤字があれば修正し、右下の「保存」ボタンを押す。保存に失敗した場合は編集権限の有無を確認し、この手順を最初からやり直す。';
+deepGuide.steps[0].completionCriteria = '画面上部に「保存しました」と表示され、公開プレビューに修正後の文言が反映されている';
+context.deepGuide = deepGuide;
+assert.equal(vm.runInContext('assessWorkGuideDepth_(validGuide).length >= 3', context), true, 'Shallow guides must be flagged by the depth check');
+assert.equal(vm.runInContext('assessWorkGuideDepth_(deepGuide).length', context), 0, 'Concrete guides must pass the depth check');
+assert.equal(vm.runInContext('buildWorkGuideDepthCheckPrompt_(validGuide, assessWorkGuideDepth_(validGuide)).includes("アプリの自動チェックで見つかった不足")', context), true);
 vm.runInContext(`
   var repairTestCalls = [];
   requireAiAutomationSettings_ = function () { return { model: 'test-model', provider: 'openai', providerLabel: 'OpenAI', maxRepairAttempts: 1 }; };
@@ -233,15 +247,17 @@ assert.equal(vm.runInContext('passedQuizResult.passed', context), true);
 assert.equal(vm.runInContext('quizTestUpdates[1].updates.status', context), 'completed');
 
 const allHtml = htmlFiles.map((file) => readFileSync(resolve(projectRoot, file), 'utf8')).join('\n');
-for (const id of ['ai-api-key', 'ai-auto-enabled', 'manual-guide-create-button', 'copy-analysis-prompt-button', 'analysis-review', 'analysis-review-confirm', 'analysis-json-prompt', 'guide-plan-prompt', 'guide-plan', 'guide-plan-confirm', 'guide-prompt', 'copy-guide-prompt-button', 'guide-json-import', 'copy-revision-prompt-button', 'cancel-guide-build-button', 'guide-review-actions', 'guide-ai-history', 'quiz-ai-history']) {
+for (const id of ['ai-api-key', 'ai-auto-enabled', 'manual-guide-create-button', 'copy-analysis-prompt-button', 'analysis-review', 'analysis-review-confirm', 'analysis-json-prompt', 'guide-plan-prompt', 'guide-plan', 'guide-plan-confirm', 'plan-refine-feedback', 'guide-prompt', 'copy-guide-prompt-button', 'guide-json-import', 'guide-depth-findings', 'copy-revision-prompt-button', 'cancel-guide-build-button', 'guide-review-actions', 'guide-ai-history', 'quiz-ai-history']) {
   assert.match(allHtml, new RegExp(`id=["']${id}["']`), `UI element #${id} is missing`);
 }
 assert.match(allHtml, /data-view=["']actions["'][^>]*>ガイド作成</, 'Manual guide creation must remain in the main navigation');
 assert.match(allHtml, /App\.copyText\(["']guide-prompt["']\)/, 'Manual guide prompts must be copyable without opening a specific AI service');
 assert.match(allHtml, /App\.prepareAnalysisJsonPrompt\(\)/, 'Meeting JSON generation must be gated by the human-readable review');
 assert.match(allHtml, /App\.prepareGuidePlanPrompt\(\)/, 'Work guide JSON generation must start with a human-readable plan');
+assert.match(allHtml, /App\.preparePlanRefinePrompt\(\)/, 'Plan refinement loop must be reachable from STEP 7');
+assert.match(allHtml, /App\.prepareDepthCheckPrompt\(\)/, 'Depth check loop must be reachable from STEP 9');
 const config = readFileSync(resolve(projectRoot, 'Config.gs'), 'utf8');
-for (const required of ['AiInteractions', 'aiInteractionLogs', 'automationStatus', 'autoReviewJson']) {
+for (const required of ['AiInteractions', 'aiInteractionLogs', 'automationStatus', 'autoReviewJson', 'workGuideDepth']) {
   assert.match(config, new RegExp(required), `Configuration ${required} is missing`);
 }
 const distCode = readFileSync(resolve(projectRoot, 'dist/Code.gs'), 'utf8');
@@ -255,6 +271,8 @@ const workGuideBuildService = readFileSync(resolve(projectRoot, 'WorkGuideBuildS
 assert.match(workGuideBuildService, /requirePassedQuizForMeeting_\(action\.meetingId\)/, 'Work guide builds must enforce the meeting quiz gate');
 assert.match(workGuideBuildService, /MANUAL_BUILD_IN_PROGRESS/, 'Automatic generation must not take over an active manual build');
 assert.match(workGuideBuildService, /GUIDE_PLAN_REQUIRED/, 'New manual guide JSON imports must require an approved human-readable plan');
+assert.match(workGuideBuildService, /function prepareWorkGuidePlanRefinePrompt\(/, 'Plan refinement endpoint is missing');
+assert.match(workGuideBuildService, /function prepareWorkGuideDepthCheckPrompt\(/, 'Depth check endpoint is missing');
 assert.match(workGuideBuildService, /function cancelWorkGuideBuild\(/, 'Open guide builds must be cancellable');
 assert.match(workGuideBuildService, /guide_not_required/, 'Cancelled guide builds must be removed from guide targets');
 const actionService = readFileSync(resolve(projectRoot, 'ActionService.gs'), 'utf8');

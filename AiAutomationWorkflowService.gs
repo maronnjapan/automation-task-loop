@@ -272,6 +272,30 @@ function automateActionGuide_(action) {
     });
     reviewedValue = reviewed.value;
     conversationId = generated.conversationId;
+    // 具体度チェック: 抽象的な手順が残る間は、上限回数まで生成AIへ追加修正を依頼する。
+    for (let depthRound = 1; depthRound <= APP_CONFIG.workGuideDepth.maxAutoRefinements; depthRound += 1) {
+      const depthFindings = assessWorkGuideDepth_(reviewedValue.workGuide);
+      if (!depthFindings.length) break;
+      const deepened = runAiJsonTask_({
+        prompt: buildWorkGuideDepthCheckPrompt_(reviewedValue.workGuide, depthFindings),
+        phase: 'work_guide_depth_refinement',
+        conversationId: conversationId,
+        meta: { meetingId: meeting.meetingId, actionId: action.actionId, buildSessionId: session.buildSessionId },
+        validator: function (guide) {
+          guide.workGuideId = '';
+          guide.version = 1;
+          guide.schemaVersion = APP_CONFIG.schemaVersion;
+          guide.sourceSnapshots = JSON.parse(JSON.stringify(data.selectedSources));
+          return validateWorkGuide_(guide);
+        }
+      });
+      reviewedValue.workGuide = deepened.value;
+      reviewedValue.review.changesMade = reviewedValue.review.changesMade.concat(['具体度チェック' + depthRound + '回目: ' + depthFindings.length + '件の不足を修正']);
+    }
+    const remainingDepthFindings = assessWorkGuideDepth_(reviewedValue.workGuide);
+    if (remainingDepthFindings.length) {
+      reviewedValue.review.remainingRisks = reviewedValue.review.remainingRisks.concat(remainingDepthFindings.map(function (item) { return '具体度チェック残: ' + item; }));
+    }
     data.importedWorkGuide = reviewedValue.workGuide;
     data.autoReview = reviewedValue.review;
     updateAutomaticWorkGuideBuild_(session.buildSessionId, 10, data);
@@ -344,6 +368,10 @@ function requestAiWorkGuideRevision(workGuideId, feedback) {
       meta: { meetingId: meeting.meetingId, actionId: action.actionId, workGuideId: workGuideId },
       validator: function (value) { return validateAutoReviewResult_(value, revised.value); }
     });
+    const remainingDepthFindings = assessWorkGuideDepth_(reviewed.value.workGuide);
+    if (remainingDepthFindings.length) {
+      reviewed.value.review.remainingRisks = reviewed.value.review.remainingRisks.concat(remainingDepthFindings.map(function (item) { return '具体度チェック残: ' + item; }));
+    }
     const saved = saveWorkGuide({
       requestToken: 'ai-revision-' + workGuideId + '-v' + expected.version + '-' + fingerprint_(feedback.trim()).slice(0, 16), confirmed: true, reviewRequired: true,
       generationMode: 'automatic_revision', autoReview: reviewed.value.review,
